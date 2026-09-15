@@ -15,14 +15,16 @@ import { toMseMimeType, CHUNK_DURATION } from '../lib/chunker';
 import { SERVER_URL } from '../lib/constants';
 import { Library } from './Library';
 import { Button } from './ui/Button';
+
 import { getServerTime } from '../lib/ntp';
+import { LocalPlaybackAdapter } from '../lib/playback/LocalPlaybackAdapter';
 import { getSocket } from '../lib/socket';
 
 interface Props {
   roomId: string;
   displayName: string;
   onLeave: () => void;
-  audioRef: React.RefObject<HTMLAudioElement | null>;
+  adapter: LocalPlaybackAdapter | null;
 }
 
 const PREFETCH_AHEAD = 4;
@@ -33,7 +35,7 @@ function formatTime(secs: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
+export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
   const { connected, roomState, roomError } = useRoom(roomId, 'viewer', displayName);
   const toast = useToast();
 
@@ -57,7 +59,7 @@ export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
 
   // Wire up NTP-scheduled play
   useAudioSync(
-    audioRef,
+    adapter,
     roomState.scheduledStartTime,
     roomState.currentTime,
     roomState.isPlaying,
@@ -70,21 +72,24 @@ export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
 
   // Update buffered percentage for progress bars
   const updateBuffered = useCallback(() => {
-    const audio = audioRef.current;
+    const audio = adapter;
     if (!audio) return;
 
     if (roomState.libraryTrackId) {
-      if (audio.duration > 0) {
+      if (audio.getDuration() > 0) {
         let bufferedEnd = 0;
-        for (let i = 0; i < audio.buffered.length; i++) {
-          const start = audio.buffered.start(i);
-          const end = audio.buffered.end(i);
-          if (audio.currentTime >= start && audio.currentTime <= end) {
-            bufferedEnd = end;
-            break;
+        const buffered = audio.getBuffered();
+        if (buffered) {
+          for (let i = 0; i < buffered.length; i++) {
+            const start = buffered.start(i);
+            const end = buffered.end(i);
+            if (audio.getCurrentTime() >= start && audio.getCurrentTime() <= end) {
+              bufferedEnd = end;
+              break;
+            }
           }
         }
-        setBufferedPercent((bufferedEnd / audio.duration) * 100);
+        setBufferedPercent((bufferedEnd / audio.getDuration()) * 100);
       } else {
         setBufferedPercent(0);
       }
@@ -101,7 +106,7 @@ export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
   useEffect(() => {
     if (!roomState.mimeType) return;
 
-    const audio = audioRef.current;
+    const audio = adapter;
     if (!audio) return;
 
     // Clean up previous MSE instance
@@ -115,8 +120,7 @@ export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
     if (roomState.libraryTrackId) {
       // Direct stream mode for library tracks
       const url = `${SERVER_URL || ''}/api/library/tracks/${roomState.libraryTrackId}/download`;
-      audio.src = url;
-      audio.load();
+      audio.setSrc(url);
       setBuffering(false);
     } else {
       // MSE mode for dropped tracks
@@ -129,8 +133,7 @@ export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
           toast.error('Streaming error: ' + err.message);
         });
 
-        audio.src = mseRef.current.objectUrl;
-        audio.load();
+        audio.setSrc(mseRef.current.objectUrl);
       } else {
         // Fallback: direct chunk URL (works for MP3 without MSE)
         setMseError(null);
@@ -164,11 +167,11 @@ export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
 
       if (mseRef.current) {
         mseRef.current.appendChunk(buffer, idx);
-      } else if (audioRef.current && !audioRef.current.src.startsWith('blob:')) {
+      } else if (adapter && !adapter.getSrc().startsWith('blob:')) {
         // Fallback: blob URL for first chunk
         const blob = new Blob([buffer], { type: roomState.mimeType });
-        audioRef.current.src = URL.createObjectURL(blob);
-        audioRef.current.load();
+        adapter.setSrc(URL.createObjectURL(blob));
+        
       }
 
       setBuffering(false);
@@ -206,12 +209,12 @@ export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
 
   // ── Also prefetch when audio advances ─────────────────────────────────
   useEffect(() => {
-    const audio = audioRef.current;
+    const audio = adapter;
     if (!audio) return;
 
     const handleTimeUpdate = () => {
-      setCurrentTime(audio.currentTime);
-      const idx = Math.floor(audio.currentTime / CHUNK_DURATION);
+      setCurrentTime(audio.getCurrentTime());
+      const idx = Math.floor(audio.getCurrentTime() / CHUNK_DURATION);
       triggerPrefetch(idx);
       updateBuffered();
     };
@@ -231,33 +234,33 @@ export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
       updateBuffered();
     };
     const handleMetadata = () => {
-      if (audio.duration) {
-        setDuration(audio.duration);
+      if (audio.getDuration()) {
+        setDuration(audio.getDuration());
       }
       updateBuffered();
     };
 
-    audio.addEventListener('timeupdate',      handleTimeUpdate);
-    audio.addEventListener('waiting',         handleWaiting);
-    audio.addEventListener('playing',         handlePlaying);
-    audio.addEventListener('pause',           handlePause);
-    audio.addEventListener('canplay',         handleCanPlay);
-    audio.addEventListener('progress',        handleProgress);
-    audio.addEventListener('loadedmetadata',  handleMetadata);
+    const unsubTimeUpdate = audio.on('timeupdate',      handleTimeUpdate);
+    const unsubWaiting = audio.on('waiting',         handleWaiting);
+    const unsubPlaying = audio.on('play',         handlePlaying);
+    const unsubPause = audio.on('pause',           handlePause);
+    const unsubCanPlay = audio.on('canplay',         handleCanPlay);
+    const unsubProgress = audio.on('progress',        handleProgress);
+    const unsubMetadata = audio.on('loadedmetadata',  handleMetadata);
 
     return () => {
-      audio.removeEventListener('timeupdate',     handleTimeUpdate);
-      audio.removeEventListener('waiting',        handleWaiting);
-      audio.removeEventListener('playing',        handlePlaying);
-      audio.removeEventListener('pause',           handlePause);
-      audio.removeEventListener('canplay',        handleCanPlay);
-      audio.removeEventListener('progress',       handleProgress);
-      audio.removeEventListener('loadedmetadata', handleMetadata);
+      unsubTimeUpdate();
+      unsubWaiting();
+      unsubPlaying();
+      unsubPause();
+      unsubCanPlay();
+      unsubProgress();
+      unsubMetadata();
     };
   }, [triggerPrefetch, updateBuffered]);
 
   const handleSyncAudio = useCallback(() => {
-    const audio = audioRef.current;
+    const audio = adapter;
     if (!audio) return;
 
     const doPlayAndSeek = () => {
@@ -267,12 +270,12 @@ export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
         if (msUntil <= 0) {
           const driftSecs = Math.abs(msUntil) / 1000;
           const target = Math.max(0, roomState.currentTime) + driftSecs;
-          audio.currentTime = target;
+          audio.seekTo(target);
         } else {
-          audio.currentTime = Math.max(0, roomState.currentTime);
+          audio.seekTo(Math.max(0, roomState.currentTime));
         }
       } else {
-        audio.currentTime = Math.max(0, roomState.currentTime);
+        audio.seekTo(Math.max(0, roomState.currentTime));
       }
 
       audio.play().then(() => {
@@ -283,7 +286,7 @@ export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
       });
     };
 
-    if (audio.readyState < 1) {
+    if (audio.getReadyState() < 1) {
       // Play immediately to capture user gesture and trigger resource load/play
       audio.play().then(() => {
         setLocalPlaying(true);
@@ -293,18 +296,19 @@ export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
       });
       
       const onLoadedMetadata = () => {
-        audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+        // We don't have removeEventListener directly, but 'on' returns an unsubscribe callback.
+        // For simplicity, we just use the unsubscription later.
         if (roomState.scheduledStartTime !== null) {
           const now = getServerTime();
           const msUntil = roomState.scheduledStartTime - now;
           if (msUntil <= 0) {
             const driftSecs = Math.abs(msUntil) / 1000;
-            audio.currentTime = Math.max(0, roomState.currentTime) + driftSecs;
+            audio.seekTo(Math.max(0, roomState.currentTime) + driftSecs);
           } else {
-            audio.currentTime = Math.max(0, roomState.currentTime);
+            audio.seekTo(Math.max(0, roomState.currentTime));
           }
         } else {
-          audio.currentTime = Math.max(0, roomState.currentTime);
+          audio.seekTo(Math.max(0, roomState.currentTime));
         }
         audio.play().then(() => {
           setLocalPlaying(true);
@@ -313,7 +317,11 @@ export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
           console.warn('[viewer] play after metadata load failed:', err);
         });
       };
-      audio.addEventListener('loadedmetadata', onLoadedMetadata);
+      
+      const unsubscribe = audio.on('loadedmetadata', () => {
+        unsubscribe();
+        onLoadedMetadata();
+      });
     } else {
       doPlayAndSeek();
     }
@@ -321,10 +329,10 @@ export function ViewerView({ roomId, displayName, onLeave, audioRef }: Props) {
 
   // ── Handle seek from host ──────────────────────────────────────────────
   useEffect(() => {
-    const audio = audioRef.current;
+    const audio = adapter;
     if (!audio || roomState.isPlaying) return;
-    if (Math.abs(audio.currentTime - roomState.currentTime) > 1) {
-      audio.currentTime = roomState.currentTime;
+    if (Math.abs(audio.getCurrentTime() - roomState.currentTime) > 1) {
+      audio.seekTo(roomState.currentTime);
     }
   }, [roomState.currentTime, roomState.isPlaying]);
 

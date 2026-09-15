@@ -4,6 +4,7 @@ import { RoomLobby }     from './components/RoomLobby';
 import { HostView }      from './components/HostView';
 import { ViewerView }    from './components/ViewerView';
 import { useNtpSync }    from './hooks/useNtpSync';
+import { usePlayback }   from './hooks/usePlayback';
 import { Spinner }       from './components/ui/Spinner';
 import { disconnectSocket } from './lib/socket';
 
@@ -18,6 +19,7 @@ interface Session {
 export default function App() {
   const { synced } = useNtpSync();
   const audioRef = useRef<HTMLAudioElement>(null);
+  const adapter = usePlayback(audioRef);
 
   const [session, setSession] = useState<Session>({
     role: null,
@@ -86,13 +88,13 @@ export default function App() {
 
       {session.role === 'host' && (
         <ErrorBoundary>
-          <HostView roomId={session.roomId} displayName={session.displayName} onLeave={handleLeave} audioRef={audioRef} />
+          <HostView roomId={session.roomId} displayName={session.displayName} onLeave={handleLeave} adapter={adapter} />
         </ErrorBoundary>
       )}
 
       {session.role === 'viewer' && (
         <ErrorBoundary>
-          <ViewerView roomId={session.roomId} displayName={session.displayName} onLeave={handleLeave} audioRef={audioRef} />
+          <ViewerView roomId={session.roomId} displayName={session.displayName} onLeave={handleLeave} adapter={adapter} />
         </ErrorBoundary>
       )}
       <audio ref={audioRef} preload="auto" className="hidden" aria-hidden="true" />

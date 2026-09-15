@@ -25,31 +25,79 @@ async function initDb() {
         duration    REAL,
         size        INTEGER,
         format      TEXT,
-        audio_key   TEXT NOT NULL,
+        audio_key   TEXT,
         cover_key   TEXT,
         lyrics_key  TEXT,
-        uploaded_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
+        uploaded_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
+        provider    TEXT DEFAULT 'local',
+        provider_track_id TEXT
       )
     `);
-    logger.info('PostgreSQL: tracks table ready');
+
+    // Idempotent migrations for existing tables
+    await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT 'local'`);
+    await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS provider_track_id TEXT`);
+    await pool.query(`ALTER TABLE tracks ALTER COLUMN audio_key DROP NOT NULL`);
+    await pool.query(`ALTER TABLE tracks ALTER COLUMN size DROP NOT NULL`);
+    await pool.query(`ALTER TABLE tracks ALTER COLUMN format DROP NOT NULL`);
+    
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS tracks_provider_provider_track_id_idx 
+      ON tracks (provider, provider_track_id) 
+      WHERE provider_track_id IS NOT NULL;
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        created_at BIGINT NOT NULL
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS connected_accounts (
+        id TEXT PRIMARY KEY,
+        user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        provider_account_id TEXT NOT NULL,
+        access_token_enc TEXT,
+        refresh_token_enc TEXT,
+        expires_at BIGINT,
+        scopes TEXT,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        UNIQUE(user_id, provider)
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS oauth_states (
+        state TEXT PRIMARY KEY,
+        user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        created_at BIGINT NOT NULL
+      )
+    `);
+
+    logger.info('PostgreSQL: tables ready');
   } catch (err) {
-    logger.error('PostgreSQL: failed to create tracks table', { error: err.message });
+    logger.error('PostgreSQL: failed to create tables', { error: err.message });
     throw err;
   }
 }
 
 /**
  * Insert a new track record.
- * @param {{ id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key }} track
+ * @param {{ id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id }} track
  */
 async function insertTrack(track) {
-  const { id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key } = track;
+  const { id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id } = track;
   const result = await pool.query(
-    `INSERT INTO tracks (id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `INSERT INTO tracks (id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
     [id, title, artist || null, duration || null, size || null, format || null,
-     audio_key, cover_key || null, lyrics_key || null]
+     audio_key || null, cover_key || null, lyrics_key || null, provider || 'local', provider_track_id || null]
   );
   return result.rows[0];
 }
@@ -83,4 +131,4 @@ async function deleteTrack(id) {
   await pool.query('DELETE FROM tracks WHERE id = $1', [id]);
 }
 
-module.exports = { initDb, insertTrack, getAllTracks, getTrack, deleteTrack };
+module.exports = { pool, initDb, insertTrack, getAllTracks, getTrack, deleteTrack };

@@ -15,12 +15,13 @@ import { sliceAudioFile, timeToChunkIndex, CHUNK_DURATION } from '../lib/chunker
 import { parseLrc, type LrcLine, type LrcMeta } from '../lib/lrcParser';
 import { SERVER_URL } from '../lib/constants';
 import { getSocket } from '../lib/socket';
+import { LocalPlaybackAdapter } from '../lib/playback/LocalPlaybackAdapter';
 
 interface Props {
   roomId: string;
   displayName: string;
   onLeave: () => void;
-  audioRef: React.RefObject<HTMLAudioElement | null>;
+  adapter: LocalPlaybackAdapter | null;
 }
 
 function formatTime(secs: number): string {
@@ -29,7 +30,7 @@ function formatTime(secs: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function HostView({ roomId, displayName, onLeave, audioRef }: Props) {
+export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   const {
     connected,
     roomState,
@@ -104,29 +105,29 @@ export function HostView({ roomId, displayName, onLeave, audioRef }: Props) {
 
   // Restore audio source if room has an active library track and audio is not loaded
   useEffect(() => {
-    if (roomState.libraryTrackId && !audioReady && audioRef.current) {
+    if (roomState.libraryTrackId && !audioReady && adapter) {
       const url = `${SERVER_URL || ''}/api/library/tracks/${roomState.libraryTrackId}/download`;
-      audioRef.current.src = url;
-      audioRef.current.load();
+      adapter.setSrc(url);
+      
       setAudioReady(true);
     }
-  }, [roomState.libraryTrackId, audioReady]);
+  }, [roomState.libraryTrackId, audioReady, adapter]);
 
   // Track current time for lyrics + seek bar
   useEffect(() => {
-    const audio = audioRef.current;
+    const audio = adapter;
     if (!audio) return;
 
     const handleTimeUpdate = () => {
-      setCurrentTime(audio.currentTime);
-      const idx = timeToChunkIndex(audio.currentTime);
+      setCurrentTime(audio.getCurrentTime());
+      const idx = timeToChunkIndex(audio.getCurrentTime());
       emitChunkPlaying(idx); // triggers GC on server
     };
     const handleEnded = () => {
       setIsPlaying(false);
       if (isRepeatRef.current === 'one') {
         if (audio) {
-          audio.currentTime = 0;
+          audio.seekTo(0);
           audio.play().then(() => {
             setIsPlaying(true);
             emitPlayRef.current(0, 0);
@@ -136,16 +137,16 @@ export function HostView({ roomId, displayName, onLeave, audioRef }: Props) {
         playNextRef.current();
       }
     };
-    const handleDuration = () => setDuration(audio.duration);
+    const handleDuration = () => setDuration(audio.getDuration());
 
-    audio.addEventListener('timeupdate', handleTimeUpdate);
-    audio.addEventListener('ended', handleEnded);
-    audio.addEventListener('loadedmetadata', handleDuration);
+    const unsubTimeUpdate = audio.on('timeupdate', handleTimeUpdate);
+    const unsubEnded = audio.on('ended', handleEnded);
+    const unsubMetadata = audio.on('loadedmetadata', handleDuration);
 
     return () => {
-      audio.removeEventListener('timeupdate', handleTimeUpdate);
-      audio.removeEventListener('ended', handleEnded);
-      audio.removeEventListener('loadedmetadata', handleDuration);
+      unsubTimeUpdate();
+      unsubEnded();
+      unsubMetadata();
     };
   }, [emitChunkPlaying]);
 
@@ -188,9 +189,9 @@ export function HostView({ roomId, displayName, onLeave, audioRef }: Props) {
 
       // Load audio locally for host playback control
       const objectUrl = URL.createObjectURL(file);
-      if (audioRef.current) {
-        audioRef.current.src = objectUrl;
-        audioRef.current.load();
+      if (adapter) {
+        adapter.setSrc(objectUrl);
+        
         setAudioReady(true);
       }
 
@@ -269,7 +270,7 @@ export function HostView({ roomId, displayName, onLeave, audioRef }: Props) {
   }, [roomState.libraryTrackId]);
 
   const playTrack = useCallback(async (track: any) => {
-    if (!audioRef.current) return;
+    if (!adapter) return;
     
     // Reset state for new song
     setLyrics([]);
@@ -311,11 +312,11 @@ export function HostView({ roomId, displayName, onLeave, audioRef }: Props) {
     });
 
     const url = `${SERVER_URL || ''}/api/library/tracks/${track.id}/download`;
-    audioRef.current.src = url;
-    audioRef.current.load();
+    adapter.setSrc(url);
+    
     setAudioReady(true);
 
-    audioRef.current.play().then(() => {
+    adapter.play().then(() => {
       setIsPlaying(true);
       emitPlay(0, 0);
     }).catch(() => {});
@@ -360,9 +361,9 @@ export function HostView({ roomId, displayName, onLeave, audioRef }: Props) {
         setCurrentQueueIndex(lastIdx);
         playTrack(queue[lastIdx]);
       } else {
-        const audio = audioRef.current;
+        const audio = adapter;
         if (audio) {
-          audio.currentTime = 0;
+          audio.seekTo(0);
           setCurrentTime(0);
           emitSeek(0, 0);
         }
@@ -487,8 +488,8 @@ export function HostView({ roomId, displayName, onLeave, audioRef }: Props) {
       await handleAudioFile(file, lrcData);
       
       // 6. Automatically start playback
-      if (audioRef.current) {
-        audioRef.current.play().then(() => {
+      if (adapter) {
+        adapter.play().then(() => {
           setIsPlaying(true);
           emitPlay(0, 0);
         }).catch(() => {});
@@ -516,9 +517,9 @@ export function HostView({ roomId, displayName, onLeave, audioRef }: Props) {
     setCurrentQueueIndex(-1);
     setIsPlaying(false);
     setAudioReady(false);
-    if (audioRef.current) {
-      audioRef.current.src = '';
-      audioRef.current.load();
+    if (adapter) {
+      adapter.setSrc('');
+      
     }
     toast.success('Queue cleared');
   }, [toast]);
@@ -526,15 +527,15 @@ export function HostView({ roomId, displayName, onLeave, audioRef }: Props) {
   const handleVolumeChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseFloat(e.target.value);
     setVolume(val);
-    if (audioRef.current) {
-      audioRef.current.volume = val;
+    if (adapter) {
+      adapter.setVolume(val);
     }
   }, []);
 
   // Sync volume on audio source changes
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = volume;
+    if (adapter) {
+      adapter.setVolume(volume);
     }
   }, [volume, audioReady]);
 
@@ -576,34 +577,34 @@ export function HostView({ roomId, displayName, onLeave, audioRef }: Props) {
   // ── Playback controls ───────────────────────────────────────────────────
 
   const handlePlay = useCallback(() => {
-    const audio = audioRef.current;
+    const audio = adapter;
     if (!audio || !audioReady) return;
     audio.play().catch(() => {});
     setIsPlaying(true);
-    emitPlay(audio.currentTime, timeToChunkIndex(audio.currentTime));
+    emitPlay(audio.getCurrentTime(), timeToChunkIndex(audio.getCurrentTime()));
   }, [audioReady, emitPlay]);
 
   const handlePause = useCallback(() => {
-    const audio = audioRef.current;
+    const audio = adapter;
     if (!audio) return;
     audio.pause();
     setIsPlaying(false);
-    emitPause(audio.currentTime);
+    emitPause(audio.getCurrentTime());
   }, [emitPause]);
 
   const handleSeek = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const audio = audioRef.current;
+    const audio = adapter;
     if (!audio) return;
     const t = parseFloat(e.target.value);
-    audio.currentTime = t;
+    audio.seekTo(t);
     setCurrentTime(t);
     emitSeek(t, timeToChunkIndex(t));
   }, [emitSeek]);
 
   const handleLyricsLineClick = useCallback((time: number) => {
-    const audio = audioRef.current;
+    const audio = adapter;
     if (!audio) return;
-    audio.currentTime = time;
+    audio.seekTo(time);
     setCurrentTime(time);
     emitSeek(time, timeToChunkIndex(time));
   }, [emitSeek]);
@@ -1050,8 +1051,8 @@ export function HostView({ roomId, displayName, onLeave, audioRef }: Props) {
                             onClick={() => {
                               setCurrentQueueIndex(idx);
                               const t = 0;
-                              if (audioRef.current) {
-                                audioRef.current.currentTime = t;
+                              if (adapter) {
+                                adapter.seekTo(t);
                                 setCurrentTime(t);
                               }
                               emitLoadLibraryTrack(track.id);
@@ -1400,7 +1401,7 @@ export function HostView({ roomId, displayName, onLeave, audioRef }: Props) {
                           <button
                             onClick={() => {
                               setCurrentQueueIndex(idx);
-                              if (audioRef.current) audioRef.current.currentTime = 0;
+                              if (adapter) adapter.seekTo(0);
                               emitLoadLibraryTrack(track.id);
                             }}
                             className="text-accent-gold text-xs px-2"

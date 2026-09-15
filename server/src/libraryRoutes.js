@@ -188,6 +188,8 @@ router.post(
         audio_key: audioKey,
         cover_key: coverKey,
         lyrics_key: lyricsKey,
+        provider: 'local',
+        provider_track_id: null
       });
     } catch (err) {
       logger.error('DB insert failed', { error: err.message });

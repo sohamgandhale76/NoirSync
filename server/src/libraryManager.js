@@ -197,7 +197,6 @@ class LibraryManager {
       fs.renameSync(tempFilePath, permanentPath);
     }
 
-    // 5. Create track metadata record
     const track = {
       id: trackId,
       title: metadata.common.title || path.basename(originalFilename, fileExt),
@@ -215,7 +214,9 @@ class LibraryManager {
       fileIds,
       originalExtension: fileExt,
       coverFilename,
-      uploadedAt: Date.now()
+      uploadedAt: Date.now(),
+      provider: 'local',
+      providerTrackId: null
     };
 
     this.tracks.push(track);

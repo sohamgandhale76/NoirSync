@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { getServerTime } from '../lib/ntp';
+import { PlaybackAdapter } from '../lib/playback/PlaybackAdapter';
 
 /**
  * Schedules audio.play() at exactly `scheduledStartTime` (server clock),
@@ -9,14 +10,14 @@ import { getServerTime } from '../lib/ntp';
  * and setTimeout for coarser scheduling when far away.
  */
 export function useAudioSync(
-  audioRef: React.RefObject<HTMLAudioElement | null>,
+  adapter: PlaybackAdapter | null,
   scheduledStartTime: number | null,
   currentTime: number,
   isPlaying: boolean,
 ) {
   const rafRef     = useRef<number | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const metadataListenerRef = useRef<(() => void) | null>(null);
+  const unbindMetadataRef = useRef<(() => void) | null>(null);
 
   const cancelAll = useCallback(() => {
     if (rafRef.current !== null) {
@@ -27,19 +28,18 @@ export function useAudioSync(
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
-    if (metadataListenerRef.current !== null && audioRef.current) {
-      audioRef.current.removeEventListener('loadedmetadata', metadataListenerRef.current);
-      metadataListenerRef.current = null;
+    if (unbindMetadataRef.current !== null) {
+      unbindMetadataRef.current();
+      unbindMetadataRef.current = null;
     }
-  }, [audioRef]);
+  }, []);
 
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
+    if (!adapter) return;
 
     if (!isPlaying) {
       cancelAll();
-      audio.pause();
+      adapter.pause();
       return;
     }
 
@@ -47,26 +47,25 @@ export function useAudioSync(
 
     // Pre-position the audio head if metadata is loaded
     const safeCurrentTime = Math.max(0, currentTime);
-    if (audio.readyState >= 1) {
-      if (Math.abs(audio.currentTime - safeCurrentTime) > 0.5) {
-        audio.currentTime = safeCurrentTime;
+    if (adapter.isReady()) {
+      if (Math.abs(adapter.getCurrentTime() - safeCurrentTime) > 0.5) {
+        adapter.seekTo(safeCurrentTime);
       }
     }
 
     const tryPlay = () => {
-      if (metadataListenerRef.current !== null) {
-        audio.removeEventListener('loadedmetadata', metadataListenerRef.current);
-        metadataListenerRef.current = null;
+      if (unbindMetadataRef.current !== null) {
+        unbindMetadataRef.current();
+        unbindMetadataRef.current = null;
       }
 
       // If metadata isn't loaded yet, we must wait for it to seek and play properly
-      if (audio.readyState < 1) {
+      if (!adapter.isReady()) {
         const onLoadedMetadata = () => {
-          metadataListenerRef.current = null;
+          unbindMetadataRef.current = null;
           tryPlay();
         };
-        metadataListenerRef.current = onLoadedMetadata;
-        audio.addEventListener('loadedmetadata', onLoadedMetadata);
+        unbindMetadataRef.current = adapter.on('loadedmetadata', onLoadedMetadata);
         return;
       }
 
@@ -77,10 +76,10 @@ export function useAudioSync(
         // We're at or past scheduled time — apply drift compensation
         const driftSecs = Math.abs(msUntil) / 1000;
         const target = safeCurrentTime + driftSecs;
-        if (Math.abs(audio.currentTime - target) > 0.1) {
-          audio.currentTime = target;
+        if (Math.abs(adapter.getCurrentTime() - target) > 0.1) {
+          adapter.seekTo(target);
         }
-        audio.play().catch((err: Error) => {
+        adapter.play().catch((err: Error) => {
           // Autoplay blocked by browser — user interaction required
           if (err.name !== 'AbortError') {
             console.warn('[audioSync] play() rejected:', err.message);
@@ -102,5 +101,5 @@ export function useAudioSync(
 
     tryPlay();
     return cancelAll;
-  }, [scheduledStartTime, isPlaying, currentTime, audioRef, cancelAll]);
+  }, [scheduledStartTime, isPlaying, currentTime, adapter, cancelAll]);
 }

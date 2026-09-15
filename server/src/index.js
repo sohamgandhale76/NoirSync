@@ -51,14 +51,22 @@ app.use(helmet({
   },
 }));
 
+const { sessionMiddleware } = require('./auth/session');
+const oauthRoutes = require('./auth/oauthRoutes');
+
 app.use(cors({
   origin: corsOrigin,
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true, // Need this for cookies
 }));
 
 app.use(compression());
 app.use(express.json({ limit: '1mb' }));
+app.use(sessionMiddleware);
+
+// Mount OAuth routes
+app.use('/api/music', oauthRoutes);
 
 // ─── Socket.io ────────────────────────────────────────────────────────────
 
@@ -113,8 +121,12 @@ const db              = require('./db');
 const fs              = require('fs');
 
 // ─── R2 Persistent Library Routes ────────────────────────────────────────────
+const musicRoutes     = require('./music/routes');
+
 // Mounted at /library (separate from legacy /api/library Telegram routes)
+// Provides clean Postgres DB queries for client components
 app.use('/library', libraryRoutes);
+app.use('/api/music', musicRoutes);
 
 // ─── Chunk Upload ─────────────────────────────────────────────────────────
 
