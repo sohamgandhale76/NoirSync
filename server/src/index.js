@@ -63,10 +63,9 @@ app.use(cors({
 
 app.use(compression());
 app.use(express.json({ limit: '1mb' }));
-app.use(sessionMiddleware);
 
-// Mount OAuth routes
-app.use('/api/music', oauthRoutes);
+// Mount OAuth routes with session middleware
+app.use('/api/music', sessionMiddleware, oauthRoutes);
 
 // ─── Socket.io ────────────────────────────────────────────────────────────
 

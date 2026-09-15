@@ -104,7 +104,7 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
 
   // ── Initialize MSE or direct streaming when mimeType/libraryTrackId changes ──
   useEffect(() => {
-    if (!roomState.mimeType) return;
+    if (!roomState.mimeType && !roomState.libraryTrackId) return;
 
     const audio = adapter;
     if (!audio) return;
@@ -120,7 +120,9 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
     if (roomState.libraryTrackId) {
       // Direct stream mode for library tracks
       const url = `${SERVER_URL || ''}/api/library/tracks/${roomState.libraryTrackId}/download`;
-      audio.setSrc(url);
+      if (audio.getSrc() !== url) {
+        audio.setSrc(url);
+      }
       setBuffering(false);
     } else {
       // MSE mode for dropped tracks
@@ -145,7 +147,7 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
       mseRef.current?.destroy();
       mseRef.current = null;
     };
-  }, [roomState.mimeType, roomState.libraryTrackId]);
+  }, [roomState.mimeType, roomState.libraryTrackId, adapter]);
 
   // ── Download a single chunk and append to MSE ──────────────────────────
   const downloadChunk = useCallback(async (idx: number) => {
@@ -242,8 +244,9 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
 
     const unsubTimeUpdate = audio.on('timeupdate',      handleTimeUpdate);
     const unsubWaiting = audio.on('waiting',         handleWaiting);
-    const unsubPlaying = audio.on('play',         handlePlaying);
-    const unsubPause = audio.on('pause',           handlePause);
+    const unsubPlaying = audio.on('play',            handlePlaying);
+    const unsubRealPlaying = audio.on('playing',     handlePlaying);
+    const unsubPause = audio.on('pause',             handlePause);
     const unsubCanPlay = audio.on('canplay',         handleCanPlay);
     const unsubProgress = audio.on('progress',        handleProgress);
     const unsubMetadata = audio.on('loadedmetadata',  handleMetadata);
@@ -252,80 +255,73 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
       unsubTimeUpdate();
       unsubWaiting();
       unsubPlaying();
+      unsubRealPlaying();
       unsubPause();
       unsubCanPlay();
       unsubProgress();
       unsubMetadata();
     };
-  }, [triggerPrefetch, updateBuffered]);
+  }, [triggerPrefetch, updateBuffered, adapter]);
 
   const handleSyncAudio = useCallback(() => {
     const audio = adapter;
     if (!audio) return;
 
-    const doPlayAndSeek = () => {
+    // 1. Ensure volume is unmuted
+    audio.setVolume(1);
+
+    // 2. Ensure audio src is properly assigned to the library track download URL
+    if (roomState.libraryTrackId) {
+      const url = `${SERVER_URL || ''}/api/library/tracks/${roomState.libraryTrackId}/download`;
+      if (audio.getSrc() !== url) {
+        audio.setSrc(url);
+      }
+    }
+
+    // 3. Compute target seek position accounting for elapsed drift
+    const calculateTarget = () => {
+      let target = Math.max(0, roomState.currentTime);
       if (roomState.scheduledStartTime !== null) {
         const now = getServerTime();
         const msUntil = roomState.scheduledStartTime - now;
         if (msUntil <= 0) {
           const driftSecs = Math.abs(msUntil) / 1000;
-          const target = Math.max(0, roomState.currentTime) + driftSecs;
-          audio.seekTo(target);
-        } else {
-          audio.seekTo(Math.max(0, roomState.currentTime));
+          target += driftSecs;
         }
-      } else {
-        audio.seekTo(Math.max(0, roomState.currentTime));
       }
-
-      audio.play().then(() => {
-        setLocalPlaying(true);
-        setBuffering(false);
-      }).catch((err) => {
-        console.warn('[viewer] user sync trigger failed:', err);
-      });
+      const dur = audio.getDuration();
+      if (dur > 0 && target >= dur) {
+        target = Math.max(0, dur - 0.5);
+      }
+      return target;
     };
 
-    if (audio.getReadyState() < 1) {
-      // Play immediately to capture user gesture and trigger resource load/play
-      audio.play().then(() => {
-        setLocalPlaying(true);
-        setBuffering(false);
-      }).catch((err) => {
-        console.warn('[viewer] user sync trigger play failed:', err);
-      });
-      
-      const onLoadedMetadata = () => {
-        // We don't have removeEventListener directly, but 'on' returns an unsubscribe callback.
-        // For simplicity, we just use the unsubscription later.
-        if (roomState.scheduledStartTime !== null) {
-          const now = getServerTime();
-          const msUntil = roomState.scheduledStartTime - now;
-          if (msUntil <= 0) {
-            const driftSecs = Math.abs(msUntil) / 1000;
-            audio.seekTo(Math.max(0, roomState.currentTime) + driftSecs);
-          } else {
-            audio.seekTo(Math.max(0, roomState.currentTime));
-          }
-        } else {
-          audio.seekTo(Math.max(0, roomState.currentTime));
+    // 4. Critical: Call play() synchronously first to capture user gesture
+    audio.play().then(() => {
+      setLocalPlaying(true);
+      setBuffering(false);
+      // Once playing, seek to synchronized target position if ready
+      if (audio.isReady()) {
+        const target = calculateTarget();
+        if (Math.abs(audio.getCurrentTime() - target) > 0.1) {
+          audio.seekTo(target);
         }
-        audio.play().then(() => {
-          setLocalPlaying(true);
-          setBuffering(false);
-        }).catch((err) => {
-          console.warn('[viewer] play after metadata load failed:', err);
-        });
-      };
-      
-      const unsubscribe = audio.on('loadedmetadata', () => {
-        unsubscribe();
-        onLoadedMetadata();
+      }
+    }).catch((err) => {
+      console.warn('[viewer] user sync trigger play failed:', err);
+    });
+
+    // 5. If metadata hasn't loaded yet, seek once loadedmetadata fires (play is already pending/initiated)
+    if (!audio.isReady()) {
+      const unsub = audio.on('loadedmetadata', () => {
+        unsub();
+        const target = calculateTarget();
+        if (target > 0) {
+          audio.seekTo(target);
+        }
       });
-    } else {
-      doPlayAndSeek();
     }
-  }, [roomState.scheduledStartTime, roomState.currentTime]);
+  }, [adapter, roomState.libraryTrackId, roomState.scheduledStartTime, roomState.currentTime]);
 
   // ── Handle seek from host ──────────────────────────────────────────────
   useEffect(() => {

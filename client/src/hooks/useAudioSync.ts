@@ -45,9 +45,12 @@ export function useAudioSync(
 
     if (scheduledStartTime === null) return;
 
-    // Pre-position the audio head if metadata is loaded
-    const safeCurrentTime = Math.max(0, currentTime);
-    if (adapter.isReady()) {
+    const now = getServerTime();
+    const msUntil = scheduledStartTime - now;
+
+    // Pre-position the audio head ONLY if waiting for a future scheduled start
+    if (msUntil > 0 && adapter.isReady()) {
+      const safeCurrentTime = Math.max(0, currentTime);
       if (Math.abs(adapter.getCurrentTime() - safeCurrentTime) > 0.5) {
         adapter.seekTo(safeCurrentTime);
       }
@@ -69,13 +72,18 @@ export function useAudioSync(
         return;
       }
 
-      const now = getServerTime();
-      const msUntil = scheduledStartTime - now;
+      const currentServerTime = getServerTime();
+      const currentMsUntil = scheduledStartTime - currentServerTime;
+      const safeCurrentTime = Math.max(0, currentTime);
 
-      if (msUntil <= 0) {
+      if (currentMsUntil <= 0) {
         // We're at or past scheduled time — apply drift compensation
-        const driftSecs = Math.abs(msUntil) / 1000;
-        const target = safeCurrentTime + driftSecs;
+        const driftSecs = Math.abs(currentMsUntil) / 1000;
+        let target = safeCurrentTime + driftSecs;
+        const dur = adapter.getDuration();
+        if (dur > 0 && target >= dur) {
+          target = Math.max(0, dur - 0.5);
+        }
         if (Math.abs(adapter.getCurrentTime() - target) > 0.1) {
           adapter.seekTo(target);
         }

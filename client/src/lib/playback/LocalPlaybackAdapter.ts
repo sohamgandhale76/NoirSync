@@ -22,6 +22,7 @@ export class LocalPlaybackAdapter implements PlaybackAdapter {
             this.unbind();
         }
         this.audio = audioElement;
+        this.audio.muted = false;
         
         // Attach DOM listeners that forward to our event system
         const bindEvent = (eventName: PlaybackEvent, domEventName: string) => {
@@ -91,6 +92,7 @@ export class LocalPlaybackAdapter implements PlaybackAdapter {
     setVolume(volume: number): void {
         if (!this.audio) return;
         this.audio.volume = volume;
+        this.audio.muted = false;
     }
 
     isReady(): boolean {

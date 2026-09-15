@@ -20,6 +20,21 @@ function connectSocket(name) {
 async function runRegression() {
   console.log('=== STARTING NOIRSYNC PROTOCOL & MULTI-CLIENT REGRESSION ===\n');
 
+  const net = require('net');
+  const isRunning = await new Promise((resolve) => {
+    const tester = net.createConnection({ port: 3001, host: '127.0.0.1' }, () => {
+      tester.end();
+      resolve(true);
+    }).on('error', () => resolve(false));
+  });
+
+  if (!isRunning) {
+    console.log('Server not running on 3001, starting embedded server...');
+    process.env.PORT = '3001';
+    require('./src/index.js');
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
   const roomId = 'TESTROOM' + Math.floor(1000 + Math.random() * 9000);
   console.log(`Using Room ID: ${roomId}`);
 
@@ -179,6 +194,7 @@ async function runRegression() {
   viewer1.disconnect();
 
   console.log('\n=== ALL REAL-TIME REGRESSION TESTS PASSED 100% ===');
+  process.exit(0);
 }
 
 runRegression().catch(err => {
