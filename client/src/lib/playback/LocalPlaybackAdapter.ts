@@ -15,6 +15,9 @@ export class LocalPlaybackAdapter implements PlaybackAdapter {
      * Binds this adapter to an actual HTMLAudioElement.
      */
     bind(audioElement: HTMLAudioElement) {
+        if (this.audio === audioElement) {
+            return;
+        }
         if (this.audio) {
             this.unbind();
         }
@@ -129,5 +132,9 @@ export class LocalPlaybackAdapter implements PlaybackAdapter {
     
     getSrc(): string {
         return this.audio ? this.audio.src : '';
+    }
+
+    getAudioElement(): HTMLAudioElement | null {
+        return this.audio;
     }
 }

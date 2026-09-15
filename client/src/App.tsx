@@ -60,44 +60,40 @@ export default function App() {
     window.history.replaceState({}, '', url.toString());
   };
 
-  // ── NTP clock sync loading screen ─────────────────────────────────────
-  if (!synced) {
-    return (
-      <div className="min-h-screen bg-noir-black flex flex-col items-center justify-center gap-6">
-        <Spinner size="lg" />
-        <div className="text-center space-y-2">
-          <p className="font-mono text-xs text-noir-ash tracking-[0.3em] uppercase animate-pulse">
-            Synchronizing Clock
-          </p>
-          <p className="font-mono text-[10px] text-noir-dim/60">
-            calibrating NTP offset…
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  // Warn if NTP sync had an error but still let the user proceed
-  // (offset defaults to 0, so sync is best-effort)
-
   return (
-    <ErrorBoundary>
-      {!session.role && (
-        <RoomLobby onJoin={handleJoin} />
-      )}
-
-      {session.role === 'host' && (
-        <ErrorBoundary>
-          <HostView roomId={session.roomId} displayName={session.displayName} onLeave={handleLeave} adapter={adapter} />
-        </ErrorBoundary>
-      )}
-
-      {session.role === 'viewer' && (
-        <ErrorBoundary>
-          <ViewerView roomId={session.roomId} displayName={session.displayName} onLeave={handleLeave} adapter={adapter} />
-        </ErrorBoundary>
-      )}
+    <>
       <audio ref={audioRef} preload="auto" className="hidden" aria-hidden="true" />
-    </ErrorBoundary>
+      {!synced ? (
+        <div className="min-h-screen bg-noir-black flex flex-col items-center justify-center gap-6">
+          <Spinner size="lg" />
+          <div className="text-center space-y-2">
+            <p className="font-mono text-xs text-noir-ash tracking-[0.3em] uppercase animate-pulse">
+              Synchronizing Clock
+            </p>
+            <p className="font-mono text-[10px] text-noir-dim/60">
+              calibrating NTP offset…
+            </p>
+          </div>
+        </div>
+      ) : (
+        <ErrorBoundary>
+          {!session.role && (
+            <RoomLobby onJoin={handleJoin} />
+          )}
+
+          {session.role === 'host' && (
+            <ErrorBoundary>
+              <HostView roomId={session.roomId} displayName={session.displayName} onLeave={handleLeave} adapter={adapter} />
+            </ErrorBoundary>
+          )}
+
+          {session.role === 'viewer' && (
+            <ErrorBoundary>
+              <ViewerView roomId={session.roomId} displayName={session.displayName} onLeave={handleLeave} adapter={adapter} />
+            </ErrorBoundary>
+          )}
+        </ErrorBoundary>
+      )}
+    </>
   );
 }

@@ -482,8 +482,9 @@ app.get(['/api/library/tracks/:id/download', '/api/library/tracks/:id/download/:
     } else {
       const filePath = libraryManager.getTrackFilePath(track.filename);
       if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ error: 'Audio file not found on disk' });
+        return res.status(404).json({ error: 'Audio file not found on disk. Local upload is unavailable on this ephemeral instance.' });
       }
+      res.setHeader('Access-Control-Allow-Origin', '*');
       fs.createReadStream(filePath, { start, end }).pipe(res);
       return;
     }
@@ -524,12 +525,13 @@ app.get(['/api/library/tracks/:id/download', '/api/library/tracks/:id/download/:
     } else {
       const filePath = libraryManager.getTrackFilePath(track.filename);
       if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ error: 'Audio file not found on disk' });
+        return res.status(404).json({ error: 'Audio file not found on disk. Local upload is unavailable on this ephemeral instance.' });
       }
       const ext = path.extname(track.filename) || '.mp3';
       if (isDownload) {
         res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}${ext}"; filename*=UTF-8''${encodeURIComponent(track.title || 'track')}${ext}`);
       }
+      res.setHeader('Access-Control-Allow-Origin', '*');
       fs.createReadStream(filePath).pipe(res);
       return;
     }
@@ -621,7 +623,7 @@ if (process.env.NODE_ENV === 'production') {
   const clientDist = path.join(__dirname, '../../client/dist');
   app.use(express.static(clientDist));
   app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/health') || req.path.startsWith('/admin')) {
+    if (req.path.startsWith('/api') || req.path.startsWith('/health') || req.path.startsWith('/admin') || req.path.startsWith('/library')) {
       return next();
     }
     res.sendFile(path.join(clientDist, 'index.html'));
@@ -693,6 +695,11 @@ io.on('connection', (socket) => {
         room.setTelegramLibraryTrack(track);
       } else {
         const filePath = libraryManager.getTrackFilePath(track.filename);
+        if (!fs.existsSync(filePath)) {
+          logger.warn('Local audio file missing from disk for room track', { roomId, trackId, filename: track.filename });
+          socket.emit('room:error', { message: 'Audio file not found on disk. Local upload is unavailable on this ephemeral instance.' });
+          return;
+        }
         const fileBuffer = fs.readFileSync(filePath);
         room.setLibraryTrack(track, fileBuffer);
       }

@@ -11,18 +11,19 @@ export function usePlayback(audioRef: React.RefObject<HTMLAudioElement | null>) 
         adapterRef.current = new LocalPlaybackAdapter();
     }
 
+    // Bind adapter to audio element whenever available (idempotent)
     useEffect(() => {
         if (audioRef.current && adapterRef.current) {
             adapterRef.current.bind(audioRef.current);
         }
+    });
 
+    // Clean up DOM listeners on component unmount
+    useEffect(() => {
         return () => {
-            // Unbind on unmount, but the adapter instance can persist across re-renders
-            if (adapterRef.current) {
-                adapterRef.current.unbind();
-            }
+            adapterRef.current?.unbind();
         };
-    }, [audioRef]);
+    }, []);
 
     return adapterRef.current;
 }

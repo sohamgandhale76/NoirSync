@@ -137,16 +137,25 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
         playNextRef.current();
       }
     };
-    const handleDuration = () => setDuration(audio.getDuration());
+    const handleDuration = () => {
+      const d = audio.getDuration();
+      if (d && !isNaN(d)) setDuration(d);
+    };
+
+    if (audio.getDuration()) {
+      handleDuration();
+    }
 
     const unsubTimeUpdate = audio.on('timeupdate', handleTimeUpdate);
     const unsubEnded = audio.on('ended', handleEnded);
     const unsubMetadata = audio.on('loadedmetadata', handleDuration);
+    const unsubDuration = audio.on('durationchange', handleDuration);
 
     return () => {
       unsubTimeUpdate();
       unsubEnded();
       unsubMetadata();
+      unsubDuration();
     };
   }, [emitChunkPlaying]);
 
@@ -419,87 +428,23 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   }, [toast]);
 
   // ── R2 Library: host picks a track from R2 → signed URL → audioRef ──────
-  const handleR2TrackSelect = useCallback(async (track: any, signedUrl: string) => {
+  const handleR2TrackSelect = useCallback((track: any) => {
     setShowR2Library(false);
     
-    console.log(`[R2 Host] Fetching signed URL for "${track.title}":`, signedUrl);
-    const toastId = toast.show(`Downloading "${track.title}" from R2 Library...`, 'info', 10000);
-    try {
-      // 1. Fetch ArrayBuffer from the server download proxy (bypasses R2 CORS issues)
-      const downloadUrl = `${SERVER_URL || ''}/api/library/tracks/${track.id}/download`;
-      console.log(`[R2 Host] Fetching audio from proxy URL: ${downloadUrl}`);
-      const res = await fetch(downloadUrl);
-      if (!res.ok) throw new Error(`HTTP ${res.status} failed to download audio file`);
-      
-      const arrayBuffer = await res.arrayBuffer();
-      
-      // 2. Build the File object
-      const format = (track.format || 'mp3').toLowerCase();
-      const mimeType = format === 'flac' ? 'audio/flac' :
-                       format === 'wav'  ? 'audio/wav'  :
-                       format === 'ogg'  ? 'audio/ogg'  : 'audio/mpeg';
-                       
-      const file = new File([arrayBuffer], `${track.title}.${format}`, { type: mimeType });
-      
-      // 3. Resolve coverFilename
-      const coverFilename = track.cover_key ? `r2-${track.id}` : null;
-      
-      // 4. Load lyrics if present
-      let lrcData = null;
-      if (track.lyrics_key) {
-        try {
-          const lrcRes = await fetch(`${SERVER_URL || ''}/library/${track.id}/lyrics`);
-          if (lrcRes.ok) {
-            const text = await lrcRes.text();
-            const parsed = parseLrc(text);
-            lrcData = {
-              lines: parsed.lines,
-              meta: {
-                title: parsed.meta.title || track.title,
-                artist: parsed.meta.artist || track.artist,
-                coverFilename,
-                libraryTrackId: track.id,
-                activeTrack: { ...track, coverFilename }
-              }
-            };
-          }
-        } catch (err) {
-          console.warn('Failed to load R2 lyrics during selection:', err);
-        }
-      }
+    const coverFilename = track.cover_key ? `r2-${track.id}` : null;
+    const format = (track.format || 'mp3').toLowerCase();
+    const mimeType = format === 'flac' ? 'audio/flac' :
+                     format === 'wav'  ? 'audio/wav'  :
+                     format === 'ogg'  ? 'audio/ogg'  : 'audio/mpeg';
 
-      if (!lrcData) {
-        // Fallback or default structure without lyrics
-        lrcData = {
-          lines: [],
-          meta: {
-            title: track.title,
-            artist: track.artist,
-            coverFilename,
-            libraryTrackId: track.id,
-            activeTrack: { ...track, coverFilename }
-          }
-        };
-      }
-      
-      toast.dismiss(toastId);
+    const normalizedTrack = {
+      ...track,
+      mimeType,
+      coverFilename,
+    };
 
-      // 5. Feed into chunk-based MSE workflow
-      await handleAudioFile(file, lrcData);
-      
-      // 6. Automatically start playback
-      if (adapter) {
-        adapter.play().then(() => {
-          setIsPlaying(true);
-          emitPlay(0, 0);
-        }).catch(() => {});
-      }
-    } catch (err: any) {
-      toast.dismiss(toastId);
-      console.error('Failed to load R2 track into room:', err);
-      toast.error(`Failed to load track from R2: ${err.message}`);
-    }
-  }, [handleAudioFile, toast, emitPlay]);
+    playTrack(normalizedTrack);
+  }, [playTrack]);
 
   // Callbacks are implemented above
 
@@ -1050,12 +995,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                           <button
                             onClick={() => {
                               setCurrentQueueIndex(idx);
-                              const t = 0;
-                              if (adapter) {
-                                adapter.seekTo(t);
-                                setCurrentTime(t);
-                              }
-                              emitLoadLibraryTrack(track.id);
+                              playTrack(track);
                             }}
                             className="text-[10px] text-accent-gold hover:scale-110 transition-transform"
                             title="Play track"
@@ -1401,8 +1341,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                           <button
                             onClick={() => {
                               setCurrentQueueIndex(idx);
-                              if (adapter) adapter.seekTo(0);
-                              emitLoadLibraryTrack(track.id);
+                              playTrack(track);
                             }}
                             className="text-accent-gold text-xs px-2"
                           >
