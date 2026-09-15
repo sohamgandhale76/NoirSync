@@ -6,6 +6,7 @@ import { ProgressBar } from './ui/ProgressBar';
 import { LyricsRenderer } from './LyricsRenderer';
 import { GlowSpotlight } from './GlowSpotlight';
 import { useRoom } from '../hooks/useRoom';
+import { useAudioSync } from '../hooks/useAudioSync';
 import { useToast } from '../hooks/useToast';
 import { ToastContainer } from './Toast';
 import { Library } from './Library';
@@ -83,6 +84,14 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   emitPlayRef.current = emitPlay;
   isRepeatRef.current = isRepeat;
 
+  // Wire up NTP-scheduled synchronized playback for host
+  useAudioSync(
+    adapter,
+    roomState.scheduledStartTime,
+    roomState.currentTime,
+    roomState.isPlaying,
+  );
+
   // Show room errors as toasts
   useEffect(() => {
     if (roomError) toast.error(roomError);
@@ -128,10 +137,8 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
       if (isRepeatRef.current === 'one') {
         if (audio) {
           audio.seekTo(0);
-          audio.play().then(() => {
-            setIsPlaying(true);
-            emitPlayRef.current(0, 0);
-          }).catch(() => {});
+          setIsPlaying(true);
+          emitPlayRef.current(0, 0);
         }
       } else {
         playNextRef.current();
@@ -324,11 +331,8 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     adapter.setSrc(url);
     
     setAudioReady(true);
-
-    adapter.play().then(() => {
-      setIsPlaying(true);
-      emitPlay(0, 0);
-    }).catch(() => {});
+    setIsPlaying(true);
+    emitPlay(0, 0);
 
     toast.success(`Playing "${track.title}" from library...`);
   }, [emitLoadLibraryTrack, emitPlay, emitUpdateTrackMetadata, toast]);
@@ -524,10 +528,9 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   const handlePlay = useCallback(() => {
     const audio = adapter;
     if (!audio || !audioReady) return;
-    audio.play().catch(() => {});
     setIsPlaying(true);
     emitPlay(audio.getCurrentTime(), timeToChunkIndex(audio.getCurrentTime()));
-  }, [audioReady, emitPlay]);
+  }, [audioReady, emitPlay, adapter]);
 
   const handlePause = useCallback(() => {
     const audio = adapter;

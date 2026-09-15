@@ -773,8 +773,8 @@ io.on('connection', (socket) => {
     const room = roomManager.getRoom(roomId);
     if (!room) return;
 
-    // Schedule 2 s ahead so all clients can buffer before starting
-    const scheduledStartTime = Date.now() + 2000;
+    // Schedule 250ms ahead so all clients can buffer and start together
+    const scheduledStartTime = Date.now() + 250;
     room.setState({ isPlaying: true, currentTime, chunkIndex, scheduledStartTime });
 
     io.to(roomId).emit('sync:play', { scheduledStartTime, currentTime, chunkIndex });
@@ -786,7 +786,7 @@ io.on('connection', (socket) => {
     const room = roomManager.getRoom(roomId);
     if (!room) return;
 
-    room.setState({ isPlaying: false, currentTime });
+    room.setState({ isPlaying: false, currentTime, scheduledStartTime: null });
     io.to(roomId).emit('sync:pause', { currentTime });
     logger.info('Paused', { roomId, currentTime });
   });
@@ -798,7 +798,7 @@ io.on('connection', (socket) => {
 
     const updates = { currentTime, chunkIndex };
     if (room.state.isPlaying) {
-      updates.scheduledStartTime = Date.now();
+      updates.scheduledStartTime = Date.now() + 250;
     }
     room.setState(updates);
     room.gcOldChunks(chunkIndex);

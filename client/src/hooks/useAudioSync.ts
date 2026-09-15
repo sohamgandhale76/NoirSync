@@ -96,11 +96,11 @@ export function useAudioSync(
         return;
       }
 
-      if (msUntil > 500) {
-        // Far away — use setTimeout, check again when closer
+      if (currentMsUntil > 200) {
+        // Far away — use setTimeout until 50ms before target, then switch to rAF
         timeoutRef.current = setTimeout(() => {
           rafRef.current = requestAnimationFrame(tryPlay);
-        }, msUntil - 500);
+        }, currentMsUntil - 50);
       } else {
         // Close — use rAF for frame-accurate scheduling
         rafRef.current = requestAnimationFrame(tryPlay);
