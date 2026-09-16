@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback, DragEvent } from 'react';
 import { SERVER_URL } from '../lib/constants';
+import { AddToPlaylistModal } from './AddToPlaylistModal';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -132,11 +133,12 @@ function StorageBar({ storage }: { storage: StorageStats | null }) {
 // ─── Track Card ───────────────────────────────────────────────────────────────
 
 function TrackCard({
-  track, onDelete, onPlay, isPlaying, isLoading,
+  track, onDelete, onPlay, onAddToPlaylist, isPlaying, isLoading,
 }: {
   track: R2Track;
   onDelete: (id: string) => void;
   onPlay: (track: R2Track) => void;
+  onAddToPlaylist?: (track: R2Track) => void;
   isPlaying: boolean;
   isLoading: boolean;
 }) {
@@ -242,6 +244,22 @@ function TrackCard({
             <div style={{ width: '12px', height: '12px', border: '2px solid #c8a96e', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
           ) : isPlaying ? '⏸' : '▶'}
         </button>
+        {onAddToPlaylist && (
+          <button
+            onClick={() => onAddToPlaylist(track)}
+            title="Add to Playlist"
+            style={{
+              width: '32px', height: '32px', borderRadius: '8px',
+              border: '1px solid rgba(200,169,110,0.25)', background: 'rgba(200,169,110,0.06)',
+              color: '#c8a96e', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer', transition: 'all 0.2s', fontSize: '13px',
+            }}
+            onMouseEnter={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.borderColor = 'rgba(200,169,110,0.6)'; b.style.background = 'rgba(200,169,110,0.18)'; }}
+            onMouseLeave={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.borderColor = 'rgba(200,169,110,0.25)'; b.style.background = 'rgba(200,169,110,0.06)'; }}
+          >
+            📋
+          </button>
+        )}
         <button
           onClick={() => onDelete(track.id)}
           title="Delete"
@@ -538,6 +556,7 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
   const [search, setSearch] = useState('');
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [loadingTrackId, setLoadingTrackId] = useState<string | null>(null);
+  const [playlistModalTrack, setPlaylistModalTrack] = useState<R2Track | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const base = SERVER_URL || '';
 
@@ -701,6 +720,7 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
                         track={track}
                         onPlay={handlePlay}
                         onDelete={handleDelete}
+                        onAddToPlaylist={(t) => setPlaylistModalTrack(t)}
                         isPlaying={playingId === track.id}
                         isLoading={loadingTrackId === track.id}
                       />
@@ -733,6 +753,20 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
           </div>
         </div>
       </div>
+
+      <AddToPlaylistModal
+        track={playlistModalTrack ? {
+          id: playlistModalTrack.id,
+          title: playlistModalTrack.title,
+          artist: playlistModalTrack.artist,
+          album: 'Cloud Library',
+          duration: playlistModalTrack.duration ?? undefined,
+          provider: 'local',
+          cover_key: playlistModalTrack.cover_key,
+        } : null}
+        isOpen={!!playlistModalTrack}
+        onClose={() => setPlaylistModalTrack(null)}
+      />
     </>
   );
 }

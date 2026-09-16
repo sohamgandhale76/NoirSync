@@ -11,6 +11,7 @@ import { useToast } from '../hooks/useToast';
 import { ToastContainer } from './Toast';
 import { Library } from './Library';
 import { LibraryBrowser } from './LibraryBrowser';
+import { PlaylistBrowser } from './PlaylistBrowser';
 import { DynamicBackground } from './DynamicBackground';
 import { sliceAudioFile, timeToChunkIndex, CHUNK_DURATION } from '../lib/chunker';
 import { parseLrc, type LrcLine, type LrcMeta } from '../lib/lrcParser';
@@ -63,10 +64,10 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   const [songName, setSongName]       = useState('');
   const [audioReady, setAudioReady]   = useState(false);
   const [dragOver, setDragOver]       = useState(false);
-  const [activeTab, setActiveTab]     = useState<'player' | 'library'>('player');
-  const [mobileTab, setMobileTab]     = useState<'player' | 'lyrics' | 'library'>('player');
+  const [activeTab, setActiveTab]     = useState<'player' | 'library' | 'playlists'>('player');
+  const [mobileTab, setMobileTab]     = useState<'player' | 'lyrics' | 'library' | 'playlists'>('player');
   const [showR2Library, setShowR2Library] = useState(false);
-  const [libraryMode, setLibraryMode]     = useState<'r2' | 'local'>('r2');
+  const [libraryMode, setLibraryMode]     = useState<'r2' | 'playlists' | 'local'>('r2');
 
   // Queue and Playback states
   // const [libraryTracks, setLibraryTracks] = useState<any[]>([]);
@@ -450,6 +451,65 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     playTrack(normalizedTrack);
   }, [playTrack]);
 
+  // ── Playlist Handlers: Play, Queue, and Load Playlist to Room Queue ─────────
+  const handlePlaylistPlayTrack = useCallback((track: any) => {
+    setShowR2Library(false);
+    const format = (track.format || 'mp3').toLowerCase();
+    const mimeType = format === 'flac' ? 'audio/flac' :
+                     format === 'wav'  ? 'audio/wav'  :
+                     format === 'ogg'  ? 'audio/ogg'  : 'audio/mpeg';
+    const coverFilename = track.cover_key ? (track.cover_key.startsWith('r2-') ? track.cover_key : `r2-${track.id}`) : null;
+    playTrack({
+      id: track.id,
+      title: track.title,
+      artist: track.artist || 'Unknown Artist',
+      album: track.album || 'Single',
+      duration: track.duration,
+      mimeType,
+      coverFilename,
+    });
+    setActiveTab('player');
+  }, [playTrack]);
+
+  const handlePlaylistAddToQueue = useCallback((track: any) => {
+    const format = (track.format || 'mp3').toLowerCase();
+    const mimeType = format === 'flac' ? 'audio/flac' :
+                     format === 'wav'  ? 'audio/wav'  :
+                     format === 'ogg'  ? 'audio/ogg'  : 'audio/mpeg';
+    const coverFilename = track.cover_key ? (track.cover_key.startsWith('r2-') ? track.cover_key : `r2-${track.id}`) : null;
+    handleAddToQueue({
+      id: track.id,
+      title: track.title,
+      artist: track.artist || 'Unknown Artist',
+      album: track.album || 'Single',
+      duration: track.duration,
+      mimeType,
+      coverFilename,
+    });
+  }, [handleAddToQueue]);
+
+  const handlePlaylistLoadToQueue = useCallback((tracksToLoad: any[]) => {
+    if (!tracksToLoad || tracksToLoad.length === 0) return;
+    const normalizedTracks = tracksToLoad.map((track) => {
+      const format = (track.format || 'mp3').toLowerCase();
+      const mimeType = format === 'flac' ? 'audio/flac' :
+                       format === 'wav'  ? 'audio/wav'  :
+                       format === 'ogg'  ? 'audio/ogg'  : 'audio/mpeg';
+      const coverFilename = track.cover_key ? (track.cover_key.startsWith('r2-') ? track.cover_key : `r2-${track.id}`) : null;
+      return {
+        id: track.id,
+        title: track.title,
+        artist: track.artist || 'Unknown Artist',
+        album: track.album || 'Single',
+        duration: track.duration,
+        mimeType,
+        coverFilename,
+      };
+    });
+    handleAddTracksToQueue(normalizedTracks);
+    setShowR2Library(false);
+  }, [handleAddTracksToQueue]);
+
   // Callbacks are implemented above
 
   const handleRemoveFromQueue = useCallback((idx: number) => {
@@ -616,7 +676,17 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                   : 'text-noir-dim hover:text-noir-white'
               }`}
             >
-              📚 Music Library
+              📚 Library
+            </button>
+            <button
+              onClick={() => setActiveTab('playlists')}
+              className={`flex-1 py-3 text-xs font-mono tracking-wider transition-colors ${
+                activeTab === 'playlists'
+                  ? 'text-accent-gold border-b-2 border-accent-gold bg-noir-charcoal/20'
+                  : 'text-noir-dim hover:text-noir-white'
+              }`}
+            >
+              📋 Playlists
             </button>
           </div>
 
@@ -760,6 +830,17 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                     className="hidden"
                     onChange={(e) => processFiles(Array.from(e.target.files ?? []))}
                   />
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'playlists' && (
+              <div className="space-y-4">
+                <div className="text-center py-4 px-4 border border-dashed border-noir-border rounded-xl">
+                  <p className="font-ui text-sm text-noir-ash">📋 Playlist Mode Active</p>
+                  <p className="font-mono text-[10px] text-noir-dim mt-1">
+                    Manage playlists, reorder songs, or load directly into room queue.
+                  </p>
                 </div>
               </div>
             )}
@@ -1024,7 +1105,27 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
 
         {/* ── Right: main content area ────────────────────────────────────── */}
         <main className="flex-1 flex flex-col overflow-hidden">
-          {activeTab === 'library' ? (
+          {activeTab === 'playlists' ? (
+            <div className="flex-1 p-8 overflow-y-auto z-10">
+              <div className="max-w-4xl mx-auto space-y-6">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                  <div>
+                    <h1 className="font-display text-3xl text-noir-white">Playlists</h1>
+                    <p className="font-body text-noir-ash mt-1">
+                      Organize playlists, reorder songs, and load entire sets directly to your room queue.
+                    </p>
+                  </div>
+                </div>
+
+                <PlaylistBrowser
+                  isHost={true}
+                  onPlayTrack={handlePlaylistPlayTrack}
+                  onAddToQueue={handlePlaylistAddToQueue}
+                  onLoadPlaylistToRoomQueue={handlePlaylistLoadToQueue}
+                />
+              </div>
+            </div>
+          ) : activeTab === 'library' ? (
             <div className="flex-1 p-8 overflow-y-auto z-10">
               <div className="max-w-4xl mx-auto space-y-6">
                 <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -1033,6 +1134,8 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                     <p className="font-body text-noir-ash mt-1">
                       {libraryMode === 'r2'
                         ? 'High-quality persistent audio tracks catalog. Stream or host direct synced playback rooms.'
+                        : libraryMode === 'playlists'
+                        ? 'Organize playlists, reorder songs, and load entire sets directly to your room queue.'
                         : 'Temporary local server catalog. Audio is uploaded to local disk and cleared when server restarts.'}
                     </p>
                   </div>
@@ -1050,6 +1153,16 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                       ☁ Cloud (R2)
                     </button>
                     <button
+                      onClick={() => setLibraryMode('playlists')}
+                      className={`px-4 py-1.5 rounded-lg font-mono text-[10px] font-semibold uppercase tracking-wider transition-all cursor-pointer ${
+                        libraryMode === 'playlists'
+                          ? 'bg-accent-gold/15 text-accent-gold border border-accent-gold/25'
+                          : 'text-noir-dim hover:text-noir-white border border-transparent'
+                      }`}
+                    >
+                      📋 Playlists
+                    </button>
+                    <button
                       onClick={() => setLibraryMode('local')}
                       className={`px-4 py-1.5 rounded-lg font-mono text-[10px] font-semibold uppercase tracking-wider transition-all cursor-pointer ${
                         libraryMode === 'local'
@@ -1064,6 +1177,13 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
 
                 {libraryMode === 'r2' ? (
                   <Library onLoadToRoom={handleR2TrackSelect} />
+                ) : libraryMode === 'playlists' ? (
+                  <PlaylistBrowser
+                    isHost={true}
+                    onPlayTrack={handlePlaylistPlayTrack}
+                    onAddToQueue={handlePlaylistAddToQueue}
+                    onLoadPlaylistToRoomQueue={handlePlaylistLoadToQueue}
+                  />
                 ) : (
                   <LibraryBrowser
                     isHost={true}
@@ -1380,6 +1500,23 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
           </div>
         )}
 
+        {mobileTab === 'playlists' && (
+          <div className="space-y-4">
+            <div className="text-center py-4 px-4 border border-dashed border-noir-border rounded-xl">
+              <p className="font-ui text-sm text-noir-ash">📋 Playlist Mode Active</p>
+              <p className="font-mono text-[10px] text-noir-dim mt-1">
+                Manage playlists, reorder songs, or load directly to room queue.
+              </p>
+            </div>
+            <PlaylistBrowser
+              isHost={true}
+              onPlayTrack={handlePlaylistPlayTrack}
+              onAddToQueue={handlePlaylistAddToQueue}
+              onLoadPlaylistToRoomQueue={handlePlaylistLoadToQueue}
+            />
+          </div>
+        )}
+
         {mobileTab === 'library' && (
           <div className="space-y-4">
             <div className="text-center py-4 px-4 border border-dashed border-noir-border rounded-xl">
@@ -1401,6 +1538,16 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                 ☁ Cloud (R2)
               </button>
               <button
+                onClick={() => setLibraryMode('playlists')}
+                className={`flex-1 py-2 rounded-lg font-mono text-[10px] font-semibold uppercase tracking-wider transition-all cursor-pointer ${
+                  libraryMode === 'playlists'
+                    ? 'bg-accent-gold/15 text-accent-gold border border-accent-gold/25'
+                    : 'text-noir-dim hover:text-noir-white border border-transparent'
+                }`}
+              >
+                📋 Playlists
+              </button>
+              <button
                 onClick={() => setLibraryMode('local')}
                 className={`flex-1 py-2 rounded-lg font-mono text-[10px] font-semibold uppercase tracking-wider transition-all cursor-pointer ${
                   libraryMode === 'local'
@@ -1414,6 +1561,13 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
 
             {libraryMode === 'r2' ? (
               <Library onLoadToRoom={handleR2TrackSelect} />
+            ) : libraryMode === 'playlists' ? (
+              <PlaylistBrowser
+                isHost={true}
+                onPlayTrack={handlePlaylistPlayTrack}
+                onAddToQueue={handlePlaylistAddToQueue}
+                onLoadPlaylistToRoomQueue={handlePlaylistLoadToQueue}
+              />
             ) : (
               <LibraryBrowser
                 isHost={true}
@@ -1457,6 +1611,15 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
           <span className="text-lg">📚</span>
           <span>Library</span>
         </button>
+        <button
+          onClick={() => setMobileTab('playlists')}
+          className={`flex flex-col items-center justify-center gap-1 text-[10px] font-mono tracking-wider transition-colors ${
+            mobileTab === 'playlists' ? 'text-accent-gold' : 'text-noir-dim hover:text-noir-white'
+          }`}
+        >
+          <span className="text-lg">📋</span>
+          <span>Playlists</span>
+        </button>
       </div>
       {/* ── Library Modal ──────────────────────────────────────────── */}
       {showR2Library && (
@@ -1489,6 +1652,16 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                   Cloud
                 </button>
                 <button
+                  onClick={() => setLibraryMode('playlists')}
+                  className={`px-3 py-1 rounded-md font-mono text-[9px] font-semibold uppercase tracking-wider transition-all cursor-pointer ${
+                    libraryMode === 'playlists'
+                      ? 'bg-accent-gold/15 text-accent-gold border border-accent-gold/25'
+                      : 'text-noir-dim hover:text-noir-white border border-transparent'
+                  }`}
+                >
+                  Playlists
+                </button>
+                <button
                   onClick={() => setLibraryMode('local')}
                   className={`px-3 py-1 rounded-md font-mono text-[9px] font-semibold uppercase tracking-wider transition-all cursor-pointer ${
                     libraryMode === 'local'
@@ -1512,6 +1685,13 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
             <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
               {libraryMode === 'r2' ? (
                 <Library onSelectTrack={handleR2TrackSelect} />
+              ) : libraryMode === 'playlists' ? (
+                <PlaylistBrowser
+                  isHost={true}
+                  onPlayTrack={handlePlaylistPlayTrack}
+                  onAddToQueue={handlePlaylistAddToQueue}
+                  onLoadPlaylistToRoomQueue={handlePlaylistLoadToQueue}
+                />
               ) : (
                 <LibraryBrowser
                   isHost={true}

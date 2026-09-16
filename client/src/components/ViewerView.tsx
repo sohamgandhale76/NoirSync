@@ -14,6 +14,7 @@ import { SourceBufferManager, isMseSupported } from '../lib/mediaSource';
 import { toMseMimeType, CHUNK_DURATION } from '../lib/chunker';
 import { SERVER_URL } from '../lib/constants';
 import { Library } from './Library';
+import { PlaylistBrowser } from './PlaylistBrowser';
 import { Button } from './ui/Button';
 
 import { getServerTime } from '../lib/ntp';
@@ -51,8 +52,9 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
   const [currentTime, setCurrentTime] = useState(0);
   const [buffering, setBuffering]      = useState(true);
   const [mseError, setMseError]        = useState<string | null>(null);
-  const [activeTab, setActiveTab]      = useState<'player' | 'library'>('player');
-  const [mobileTab, setMobileTab]      = useState<'player' | 'lyrics' | 'library'>('player');
+  const [activeTab, setActiveTab]      = useState<'player' | 'library' | 'playlists'>('player');
+  const [mobileTab, setMobileTab]      = useState<'player' | 'lyrics' | 'library' | 'playlists'>('player');
+  const [viewMode, setViewMode]        = useState<'r2' | 'playlists'>('r2');
   const [localPlaying, setLocalPlaying] = useState(false);
   const [bufferedPercent, setBufferedPercent] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -399,7 +401,17 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                   : 'text-noir-dim hover:text-noir-white'
               }`}
             >
-              📚 Music Library
+              📚 Library
+            </button>
+            <button
+              onClick={() => setActiveTab('playlists')}
+              className={`flex-1 py-3 text-xs font-mono tracking-wider transition-colors ${
+                activeTab === 'playlists'
+                  ? 'text-accent-gold border-b-2 border-accent-gold bg-noir-charcoal/20'
+                  : 'text-noir-dim hover:text-noir-white'
+              }`}
+            >
+              📋 Playlists
             </button>
           </div>
 
@@ -599,6 +611,15 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                   </div>
                 </div>
               </>
+            ) : activeTab === 'playlists' ? (
+              <div className="space-y-4">
+                <div className="text-center py-4 px-4 border border-dashed border-noir-border rounded-xl">
+                  <p className="font-ui text-sm text-noir-ash">📋 Playlist Mode</p>
+                  <p className="font-mono text-[10px] text-noir-dim mt-1">
+                    Manage your personal playlists. Playback is controlled by the host.
+                  </p>
+                </div>
+              </div>
             ) : (
               <div className="space-y-4">
                 <div className="text-center py-4 px-4 border border-dashed border-noir-border rounded-xl">
@@ -614,16 +635,61 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
 
         {/* ── Right: main content area ────────────────────────────────────── */}
         <main className="flex-1 flex flex-col overflow-hidden">
-          {activeTab === 'library' ? (
+          {activeTab === 'playlists' ? (
             <div className="flex-1 p-8 overflow-y-auto z-10">
               <div className="max-w-4xl mx-auto space-y-6">
                 <div>
-                  <h1 className="font-display text-3xl text-noir-white">Music Library</h1>
+                  <h1 className="font-display text-3xl text-noir-white">Playlists</h1>
                   <p className="font-body text-noir-ash mt-1">
-                    Browse the room playlist catalog or contribute to the library. Only the host can play songs.
+                    Create and manage your playlists. Only the host can play songs in the room.
                   </p>
                 </div>
-                <Library />
+                <PlaylistBrowser isHost={false} />
+              </div>
+            </div>
+          ) : activeTab === 'library' ? (
+            <div className="flex-1 p-8 overflow-y-auto z-10">
+              <div className="max-w-4xl mx-auto space-y-6">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                  <div>
+                    <h1 className="font-display text-3xl text-noir-white">Music Library</h1>
+                    <p className="font-body text-noir-ash mt-1">
+                      {viewMode === 'r2'
+                        ? 'Browse the room playlist catalog or contribute to the library. Only the host can play songs.'
+                        : 'Create and manage your playlists. Only the host can play songs in the room.'}
+                    </p>
+                  </div>
+
+                  {/* Mode Selector */}
+                  <div className="flex bg-noir-graphite/40 border border-noir-border/30 p-1 rounded-xl shrink-0 self-start md:self-auto">
+                    <button
+                      onClick={() => setViewMode('r2')}
+                      className={`px-4 py-1.5 rounded-lg font-mono text-[10px] font-semibold uppercase tracking-wider transition-all cursor-pointer ${
+                        viewMode === 'r2'
+                          ? 'bg-accent-gold/15 text-accent-gold border border-accent-gold/25'
+                          : 'text-noir-dim hover:text-noir-white border border-transparent'
+                      }`}
+                    >
+                      ☁ Cloud (R2)
+                    </button>
+                    <button
+                      onClick={() => setViewMode('playlists')}
+                      className={`px-4 py-1.5 rounded-lg font-mono text-[10px] font-semibold uppercase tracking-wider transition-all cursor-pointer ${
+                        viewMode === 'playlists'
+                          ? 'bg-accent-gold/15 text-accent-gold border border-accent-gold/25'
+                          : 'text-noir-dim hover:text-noir-white border border-transparent'
+                      }`}
+                    >
+                      📋 Playlists
+                    </button>
+                  </div>
+                </div>
+
+                {viewMode === 'r2' ? (
+                  <Library />
+                ) : (
+                  <PlaylistBrowser isHost={false} />
+                )}
               </div>
             </div>
           ) : (
@@ -863,6 +929,18 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
           </div>
         )}
 
+        {mobileTab === 'playlists' && (
+          <div className="space-y-4">
+            <div className="text-center py-4 px-4 border border-dashed border-noir-border rounded-xl">
+              <p className="font-ui text-sm text-noir-ash">📋 Playlist Mode</p>
+              <p className="font-mono text-[10px] text-noir-dim mt-1">
+                Manage your personal playlists. Playback is controlled by the host.
+              </p>
+            </div>
+            <PlaylistBrowser isHost={false} />
+          </div>
+        )}
+
         {mobileTab === 'library' && (
           <div className="space-y-4">
             <div className="text-center py-4 px-4 border border-dashed border-noir-border rounded-xl">
@@ -871,7 +949,35 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                 Browse the library or upload tracks. Only the host can play them.
               </p>
             </div>
-            <Library />
+
+            <div className="flex bg-noir-graphite/40 border border-noir-border/30 p-1 rounded-xl w-full">
+              <button
+                onClick={() => setViewMode('r2')}
+                className={`flex-1 py-2 rounded-lg font-mono text-[10px] font-semibold uppercase tracking-wider transition-all cursor-pointer ${
+                  viewMode === 'r2'
+                    ? 'bg-accent-gold/15 text-accent-gold border border-accent-gold/25'
+                    : 'text-noir-dim hover:text-noir-white border border-transparent'
+                }`}
+              >
+                ☁ Cloud (R2)
+              </button>
+              <button
+                onClick={() => setViewMode('playlists')}
+                className={`flex-1 py-2 rounded-lg font-mono text-[10px] font-semibold uppercase tracking-wider transition-all cursor-pointer ${
+                  viewMode === 'playlists'
+                    ? 'bg-accent-gold/15 text-accent-gold border border-accent-gold/25'
+                    : 'text-noir-dim hover:text-noir-white border border-transparent'
+                }`}
+              >
+                📋 Playlists
+              </button>
+            </div>
+
+            {viewMode === 'r2' ? (
+              <Library />
+            ) : (
+              <PlaylistBrowser isHost={false} />
+            )}
           </div>
         )}
       </div>
@@ -904,6 +1010,15 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
         >
           <span className="text-lg">📚</span>
           <span>Library</span>
+        </button>
+        <button
+          onClick={() => setMobileTab('playlists')}
+          className={`flex flex-col items-center justify-center gap-1 text-[10px] font-mono tracking-wider transition-colors ${
+            mobileTab === 'playlists' ? 'text-accent-gold' : 'text-noir-dim hover:text-noir-white'
+          }`}
+        >
+          <span className="text-lg">📋</span>
+          <span>Playlists</span>
         </button>
       </div>
 

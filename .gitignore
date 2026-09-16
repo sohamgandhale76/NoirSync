@@ -63,3 +63,7 @@ temp/
 # Music app uploads and local db cache
 server/data/library.json
 server/uploads/
+
+.env
+server/.env
+node_modules/
