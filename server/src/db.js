@@ -37,6 +37,8 @@ async function initDb() {
     // Idempotent migrations for existing tables
     await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT 'local'`);
     await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS provider_track_id TEXT`);
+    await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album TEXT`);
+    await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS external_url TEXT`);
     await pool.query(`ALTER TABLE tracks ALTER COLUMN audio_key DROP NOT NULL`);
     await pool.query(`ALTER TABLE tracks ALTER COLUMN size DROP NOT NULL`);
     await pool.query(`ALTER TABLE tracks ALTER COLUMN format DROP NOT NULL`);
@@ -79,6 +81,43 @@ async function initDb() {
       )
     `);
 
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS playlists (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        description TEXT,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS playlists_user_id_idx 
+      ON playlists(user_id)
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS playlist_tracks (
+        id TEXT PRIMARY KEY,
+        playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+        track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        added_at BIGINT NOT NULL,
+        UNIQUE (playlist_id, track_id)
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS playlist_tracks_playlist_id_position_idx 
+      ON playlist_tracks (playlist_id, position)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS playlist_tracks_track_id_idx 
+      ON playlist_tracks (track_id)
+    `);
+
     logger.info('PostgreSQL: tables ready');
   } catch (err) {
     logger.error('PostgreSQL: failed to create tables', { error: err.message });
@@ -88,16 +127,16 @@ async function initDb() {
 
 /**
  * Insert a new track record.
- * @param {{ id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id }} track
+ * @param {{ id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id, album, external_url }} track
  */
 async function insertTrack(track) {
-  const { id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id } = track;
+  const { id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id, album, external_url } = track;
   const result = await pool.query(
-    `INSERT INTO tracks (id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    `INSERT INTO tracks (id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id, album, external_url)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING *`,
     [id, title, artist || null, duration || null, size || null, format || null,
-     audio_key || null, cover_key || null, lyrics_key || null, provider || 'local', provider_track_id || null]
+     audio_key || null, cover_key || null, lyrics_key || null, provider || 'local', provider_track_id || null, album || null, external_url || null]
   );
   return result.rows[0];
 }

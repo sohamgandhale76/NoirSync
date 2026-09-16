@@ -4,6 +4,8 @@ import { Button } from './ui/Button';
 import { ProgressBar } from './ui/ProgressBar';
 import { Spinner } from './ui/Spinner';
 import { SERVER_URL } from '../lib/constants';
+import { PlaylistBrowser } from './PlaylistBrowser';
+import { AddToPlaylistModal } from './AddToPlaylistModal';
 
 export interface LibraryTrack {
   id: string;
@@ -78,9 +80,10 @@ export function LibraryBrowser({
   const [syncingTrackId, setSyncingTrackId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [subTab, setSubTab] = useState<'songs' | 'albums' | 'genres'>('songs');
+  const [subTab, setSubTab] = useState<'songs' | 'albums' | 'genres' | 'playlists'>('songs');
   const [selectedAlbum, setSelectedAlbum] = useState<string | null>(null);
   const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
+  const [playlistModalTrack, setPlaylistModalTrack] = useState<LibraryTrack | null>(null);
 
   // Batch upload states
   const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([]);
@@ -571,7 +574,7 @@ export function LibraryBrowser({
           </div>
 
           <div className="flex bg-noir-graphite/60 border border-noir-border/50 p-1 rounded-lg self-stretch sm:self-auto">
-            {(['songs', 'albums', 'genres'] as const).map((tab) => (
+            {(['songs', 'albums', 'genres', 'playlists'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => {
@@ -648,6 +651,60 @@ export function LibraryBrowser({
             Loading Catalog...
           </p>
         </div>
+      ) : subTab === 'playlists' ? (
+        <PlaylistBrowser
+          isHost={isHost}
+          onPlayTrack={(track) => {
+            if (onHostTrack) onHostTrack(track.id);
+          }}
+          onAddToQueue={(track) => {
+            if (onAddToQueue) {
+              const libTrack = tracks.find((t) => t.id === track.id) || {
+                id: track.id,
+                title: track.title,
+                artist: track.artist || 'Unknown Artist',
+                album: track.album || 'Single',
+                genre: 'Various',
+                year: null,
+                duration: track.duration,
+                bitrate: 320,
+                lossless: false,
+                mimeType: track.format === 'flac' ? 'audio/flac' : 'audio/mpeg',
+                fileSize: track.size || 0,
+                filename: track.id,
+                coverFilename: track.cover_key || null,
+                uploadedAt: Date.now(),
+              };
+              onAddToQueue(libTrack);
+            }
+          }}
+          onLoadPlaylistToRoomQueue={(pTracks) => {
+            if (onAddTracksToQueue && pTracks.length > 0) {
+              const libTracks = pTracks.map((pt) => {
+                const match = tracks.find((t) => t.id === pt.id);
+                return (
+                  match || {
+                    id: pt.id,
+                    title: pt.title,
+                    artist: pt.artist || 'Unknown Artist',
+                    album: pt.album || 'Single',
+                    genre: 'Various',
+                    year: null,
+                    duration: pt.duration,
+                    bitrate: 320,
+                    lossless: false,
+                    mimeType: pt.format === 'flac' ? 'audio/flac' : 'audio/mpeg',
+                    fileSize: pt.size || 0,
+                    filename: pt.id,
+                    coverFilename: pt.cover_key || null,
+                    uploadedAt: Date.now(),
+                  }
+                );
+              });
+              onAddTracksToQueue(libTracks);
+            }
+          }}
+        />
       ) : (
         <>
           {subTab === 'songs' && (
@@ -759,6 +816,16 @@ export function LibraryBrowser({
                             ➕ Queue
                           </Button>
                         )}
+
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="whitespace-nowrap border border-noir-border hover:border-accent-gold/40 text-accent-gold text-[11px] py-1 h-7"
+                          onClick={() => setPlaylistModalTrack(track)}
+                          title="Add to playlist"
+                        >
+                          📋 Playlist
+                        </Button>
 
                         {isHost && track.source !== 'telegram' && (
                           <Button
@@ -1005,6 +1072,14 @@ export function LibraryBrowser({
                         {activeTrackId === track.id ? 'Playing' : 'Play'}
                       </button>
                     )}
+
+                    <button
+                      onClick={() => setPlaylistModalTrack(track)}
+                      className="text-xs px-2 py-1 rounded font-ui font-medium text-noir-ash bg-noir-graphite border border-noir-border hover:border-accent-gold/55 hover:text-accent-gold transition-all"
+                      title="Add to playlist"
+                    >
+                      📋 Playlist
+                    </button>
                   </div>
                 </div>
               ))}
@@ -1112,6 +1187,12 @@ export function LibraryBrowser({
           </GlassPanel>
         </div>
       )}
+
+      <AddToPlaylistModal
+        track={playlistModalTrack}
+        isOpen={!!playlistModalTrack}
+        onClose={() => setPlaylistModalTrack(null)}
+      />
     </div>
   );
 }

@@ -56,7 +56,7 @@ const oauthRoutes = require('./auth/oauthRoutes');
 
 app.use(cors({
   origin: corsOrigin,
-  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true, // Need this for cookies
 }));
@@ -64,8 +64,12 @@ app.use(cors({
 app.use(compression());
 app.use(express.json({ limit: '1mb' }));
 
+const playlistRoutes = require('./playlists/routes');
+
 // Mount OAuth routes with session middleware
 app.use('/api/music', sessionMiddleware, oauthRoutes);
+// Mount Playlist routes with session middleware
+app.use('/api/playlists', sessionMiddleware, playlistRoutes);
 
 // ─── Socket.io ────────────────────────────────────────────────────────────
 
