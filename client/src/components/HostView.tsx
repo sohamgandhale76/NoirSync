@@ -107,9 +107,9 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   emitPlayRef.current = emitPlay;
   isRepeatRef.current = isRepeat;
 
-  // Wire up NTP-scheduled synchronized playback for host
+  // Wire up NTP-scheduled synchronized playback for host (disabled in Spotify mode)
   useAudioSync(
-    adapter,
+    roomState.source === 'spotify' ? null : adapter,
     roomState.scheduledStartTime,
     roomState.currentTime,
     roomState.isPlaying,
@@ -128,15 +128,9 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     }
   }, [roomState.source, roomState.lyrics, roomState.lrcMeta, roomState.songName, roomState.duration, roomState.spotifyTrack?.durationMs, roomState.isPlaying]);
 
-  // Track position in Spotify mode
+  // Track position in Spotify mode (single 200ms progress timer)
   useEffect(() => {
     if (roomState.source !== 'spotify') return;
-    const unsubTime = spotifyAdapter.on('timeupdate', () => {
-      setCurrentTime(spotifyAdapter.getCurrentTime());
-      if (spotifyAdapter.getDuration() > 0) {
-        setDuration(spotifyAdapter.getDuration());
-      }
-    });
 
     const handleSpotifyEnded = () => {
       setIsPlaying(false);
@@ -152,14 +146,23 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     };
     const unsubEnded = spotifyAdapter.on('ended', handleSpotifyEnded);
 
+    const dur = spotifyAdapter.getDuration();
+    if (dur > 0) setDuration(dur);
+
+    const unsubDuration = spotifyAdapter.on('durationchange', () => {
+      const d = spotifyAdapter.getDuration();
+      if (d > 0) setDuration(d);
+    });
+
     const interval = setInterval(() => {
       if (roomState.isPlaying) {
         setCurrentTime(spotifyAdapter.getCurrentTime());
       }
-    }, 250);
+    }, 200);
+
     return () => {
-      unsubTime();
       unsubEnded();
+      unsubDuration();
       clearInterval(interval);
     };
   }, [roomState.source, roomState.isPlaying, spotifyAdapter]);
@@ -194,8 +197,9 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     }
   }, [roomState.libraryTrackId, audioReady, adapter]);
 
-  // Track current time for lyrics + seek bar
+  // Track current time for lyrics + seek bar (local audio only)
   useEffect(() => {
+    if (roomState.source === 'spotify') return;
     const audio = adapter;
     if (!audio) return;
 
@@ -236,7 +240,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
       unsubMetadata();
       unsubDuration();
     };
-  }, [emitChunkPlaying]);
+  }, [roomState.source, adapter, emitChunkPlaying]);
 
   // ── Load audio + upload chunks ──────────────────────────────────────────
 

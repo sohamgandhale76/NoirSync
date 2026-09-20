@@ -60,6 +60,7 @@ export function PlaylistBrowser({
     loading: playlistsLoading,
     getPlaylist,
     createPlaylist,
+    importSpotifyPlaylist,
     updatePlaylist,
     deletePlaylist,
     removeTrackFromPlaylist,
@@ -74,6 +75,19 @@ export function PlaylistBrowser({
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editTitleValue, setEditTitleValue] = useState('');
   const [reordering, setReordering] = useState(false);
+
+  // Spotify Playlist Import state
+  const [showImportBox, setShowImportBox] = useState(false);
+  const [spotifyUrl, setSpotifyUrl] = useState('');
+  const [importStatus, setImportStatus] = useState<'idle' | 'importing' | 'completed' | 'failed'>('idle');
+  const [importSummary, setImportSummary] = useState<{
+    playlistName: string;
+    total: number;
+    added: number;
+    unavailable: number;
+    duplicates: number;
+  } | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
 
   // Auto-select first playlist if none selected
   useEffect(() => {
@@ -117,6 +131,28 @@ export function PlaylistBrowser({
       // Handled by hook error state
     } finally {
       setIsCreating(false);
+    }
+  };
+
+  const handleImportSpotify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!spotifyUrl.trim() || importStatus === 'importing') return;
+
+    setImportStatus('importing');
+    setImportError(null);
+    setImportSummary(null);
+
+    try {
+      const result = await importSpotifyPlaylist(spotifyUrl.trim());
+      setImportStatus('completed');
+      setImportSummary(result.summary);
+      setSpotifyUrl('');
+      if (result.playlist?.id) {
+        setSelectedPlaylistId(result.playlist.id);
+      }
+    } catch (err: any) {
+      setImportStatus('failed');
+      setImportError(err.message || 'Failed to import Spotify playlist');
     }
   };
 
@@ -231,6 +267,77 @@ export function PlaylistBrowser({
             +
           </Button>
         </form>
+
+        {/* ── Import Spotify Playlist Section ── */}
+        <div className="mt-2.5 pb-2 border-b border-noir-border/30">
+          <button
+            type="button"
+            onClick={() => setShowImportBox(!showImportBox)}
+            className="w-full flex items-center justify-between text-left py-1 text-[11px] font-medium text-[#1db954] hover:text-[#1ed760] transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
+                <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+              </svg>
+              Import Spotify Playlist
+            </span>
+            <span className="text-[10px] text-noir-ash font-mono">{showImportBox ? '▲' : '▼'}</span>
+          </button>
+
+          {showImportBox && (
+            <div className="mt-2 space-y-2 p-2.5 rounded-xl border border-[#1db954]/20 bg-[#1db954]/5">
+              <form onSubmit={handleImportSpotify} className="space-y-2">
+                <input
+                  type="text"
+                  placeholder="Paste Spotify playlist link"
+                  value={spotifyUrl}
+                  onChange={(e) => setSpotifyUrl(e.target.value)}
+                  disabled={importStatus === 'importing'}
+                  className="w-full bg-noir-graphite/80 border border-noir-border/60 rounded-lg px-2.5 py-1.5 text-xs text-noir-white placeholder:text-noir-ash focus:outline-none focus:border-[#1db954] transition-colors"
+                />
+                <Button
+                  type="submit"
+                  variant="gold"
+                  size="sm"
+                  disabled={!spotifyUrl.trim() || importStatus === 'importing'}
+                  loading={importStatus === 'importing'}
+                  className="w-full py-1 text-xs font-medium !bg-[#1db954] hover:!bg-[#1ed760] !text-black"
+                >
+                  {importStatus === 'importing' ? 'Importing...' : 'Import Playlist'}
+                </Button>
+              </form>
+
+              {/* Status: Importing */}
+              {importStatus === 'importing' && (
+                <div className="flex items-center gap-2 text-[11px] text-[#1db954] pt-1">
+                  <Spinner size="sm" />
+                  <span>Importing playlist & resolving tracks...</span>
+                </div>
+              )}
+
+              {/* Status: Completed Summary */}
+              {importStatus === 'completed' && importSummary && (
+                <div className="text-[11px] p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 space-y-1">
+                  <div className="font-semibold flex items-center gap-1 text-emerald-400">
+                    <span>✓</span> Playlist imported: &quot;{importSummary.playlistName}&quot;
+                  </div>
+                  <div className="text-[10px] text-emerald-200/80 font-mono flex flex-wrap gap-x-2">
+                    <span>{importSummary.added} tracks added</span>
+                    {importSummary.unavailable > 0 && <span>• {importSummary.unavailable} unavailable</span>}
+                    {importSummary.duplicates > 0 && <span>• {importSummary.duplicates} duplicates</span>}
+                  </div>
+                </div>
+              )}
+
+              {/* Status: Failed */}
+              {importStatus === 'failed' && importError && (
+                <div className="text-[11px] p-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300">
+                  <span className="font-semibold text-red-400">Import failed:</span> {importError}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Playlists list */}
         <div className="mt-3 flex-1 overflow-y-auto space-y-1 pr-1 custom-scrollbar">

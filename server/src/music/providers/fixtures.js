@@ -111,9 +111,37 @@ function getDevFixtureTrack(providerTrackId) {
   return SPOTIFY_DEV_TRACKS.find(t => t.providerTrackId === providerTrackId) || null;
 }
 
+const SPOTIFY_DEV_PLAYLISTS = [
+  {
+    id: '37i9dQZF1DXcBWIGoYBM5M',
+    name: "Today's Top Hits",
+    description: "The hottest tracks right now.",
+    images: [{ url: 'https://i.scdn.co/image/ab67616d0000b2735755e164993798e0c9ef7d7a' }],
+    items: SPOTIFY_DEV_TRACKS.map(t => ({
+      track: {
+        id: t.providerTrackId,
+        name: t.title,
+        artists: [{ name: t.artist }],
+        album: { name: t.album, images: [{ url: t.coverUrl }] },
+        duration_ms: (t.duration || 200) * 1000,
+        external_urls: { spotify: t.externalUrl },
+        is_local: false,
+        type: 'track'
+      }
+    }))
+  }
+];
+
+function getDevFixturePlaylist(playlistId) {
+  if (!isDevFixturesEnabled()) return null;
+  return SPOTIFY_DEV_PLAYLISTS.find(p => p.id === playlistId) || null;
+}
+
 module.exports = {
   isDevFixturesEnabled,
   searchDevFixtures,
   getDevFixtureTrack,
-  SPOTIFY_DEV_TRACKS
+  getDevFixturePlaylist,
+  SPOTIFY_DEV_TRACKS,
+  SPOTIFY_DEV_PLAYLISTS
 };

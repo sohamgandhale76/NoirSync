@@ -51,16 +51,24 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
 
   /**
    * Initializes the Spotify.Player instance safely (idempotent, single instance).
+   * Explicitly awaits the SDK 'ready' event and device_id with a bounded timeout.
    */
   public async init(): Promise<void> {
     if (this.isDestroyed) return;
-    if (this.player) return;
+    if (this.player && this.deviceId) return;
     if (this.initPromise) return this.initPromise;
 
     this.initPromise = (async () => {
       try {
         const SpotifySDK = await loadSpotifySDK();
         if (this.isDestroyed) return;
+
+        let readyResolver: ((deviceId: string) => void) | null = null;
+        let readyRejecter: ((err: Error) => void) | null = null;
+        const readyPromise = new Promise<string>((resolve, reject) => {
+          readyResolver = resolve;
+          readyRejecter = reject;
+        });
 
         this.player = new SpotifySDK.Player({
           name: 'NoirSync Web Player',
@@ -80,6 +88,10 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
           console.info('[SpotifyAdapter] Player READY event received. deviceId:', device_id);
           this.deviceId = device_id;
           this.isPlayerReady = true;
+          if (readyResolver) {
+            readyResolver(device_id);
+            readyResolver = null;
+          }
           this.emit('canplay');
         });
 
@@ -126,21 +138,61 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
 
         this.player.addListener('initialization_error', ({ message }: { message: string }) => {
           console.error('[SpotifyAdapter] SDK initialization_error event:', message);
-          this.emit('waiting', new Error(message));
+          const err = new Error(`Spotify initialization error: ${message}`);
+          if (readyRejecter) {
+            readyRejecter(err);
+            readyRejecter = null;
+          }
+          this.emit('waiting', err);
         });
 
         this.player.addListener('authentication_error', ({ message }: { message: string }) => {
           console.error('[SpotifyAdapter] SDK authentication_error event:', message);
-          this.emit('waiting', new Error(message));
+          const err = new Error(`Spotify authentication error: ${message}`);
+          if (readyRejecter) {
+            readyRejecter(err);
+            readyRejecter = null;
+          }
+          this.emit('waiting', err);
         });
 
         this.player.addListener('account_error', ({ message }: { message: string }) => {
           console.error('[SpotifyAdapter] SDK account_error event (Spotify Premium check failed):', message);
-          this.emit('waiting', new Error(`Spotify Premium required: ${message}`));
+          const err = new Error(`Spotify Premium required: ${message}`);
+          if (readyRejecter) {
+            readyRejecter(err);
+            readyRejecter = null;
+          }
+          this.emit('waiting', err);
         });
 
-        await this.player.connect();
-        console.info('[SpotifyRoom] adapter initialized, waiting for ready event. deviceId:', this.deviceId);
+        this.player.addListener('playback_error', ({ message }: { message: string }) => {
+          console.error('[SpotifyAdapter] SDK playback_error event:', message);
+          this.emit('waiting', new Error(`Spotify playback error: ${message}`));
+        });
+
+        const connectSuccess = await this.player.connect();
+        if (!connectSuccess) {
+          throw new Error('Spotify player.connect() returned false');
+        }
+
+        // Bounded wait for ready event / deviceId (6000ms)
+        if (!this.deviceId) {
+          let timeoutId: any;
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => {
+              reject(new Error('Spotify SDK ready event timed out (6000ms)'));
+            }, 6000);
+          });
+
+          try {
+            await Promise.race([readyPromise, timeoutPromise]);
+          } finally {
+            clearTimeout(timeoutId);
+          }
+        }
+
+        console.info('[SpotifyAdapter] Adapter fully initialized with deviceId:', this.deviceId);
       } catch (err) {
         this.initPromise = null;
         throw err;
@@ -155,7 +207,7 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
    */
   public async activateElement(): Promise<void> {
     if (this.player && typeof this.player.activateElement === 'function') {
-      await this.player.activateElement();
+      await this.player.activateElement().catch(() => {});
     }
   }
 
@@ -166,22 +218,27 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
    * Subsequent play calls use player.resume().
    */
   async play(positionMs?: number): Promise<void> {
-    if (!this.player) {
+    if (!this.player || !this.deviceId) {
       await this.init();
     }
 
-    if (typeof this.player.activateElement === 'function') {
+    if (this.player && typeof this.player.activateElement === 'function') {
       await this.player.activateElement().catch(() => {});
     }
 
-    // If the track is already loaded/cued in player, use SDK resume() directly
+    // If the track is already loaded/cued in player, check whether seek is materially required, then resume
     if (this.trackLoadedInPlayer && this.isPlayerReady) {
       if (typeof positionMs === 'number' && positionMs >= 0) {
-        await this.player.seek(Math.round(positionMs)).catch(() => {});
-        this.positionMs = Math.round(positionMs);
-        this.lastPositionUpdateTime = Date.now();
+        const drift = Math.abs(this.positionMs - positionMs);
+        if (drift > 1500) {
+          await this.player.seek(Math.round(positionMs)).catch(() => {});
+          this.positionMs = Math.round(positionMs);
+          this.lastPositionUpdateTime = Date.now();
+        }
       }
-      await this.player.resume();
+      await this.player.resume().catch((err: any) => {
+        console.warn('[SpotifyAdapter] player.resume() failed:', err);
+      });
       this.isPaused = false;
       this.emit('play');
       this.emit('playing');
@@ -244,7 +301,9 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
 
   pause(): void {
     if (this.player) {
-      this.player.pause().catch(() => {});
+      this.player.pause().catch((err: any) => {
+        console.warn('[SpotifyAdapter] player.pause() failed:', err);
+      });
       this.isPaused = true;
       this.emit('pause');
     }

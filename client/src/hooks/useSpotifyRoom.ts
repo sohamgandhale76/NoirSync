@@ -114,6 +114,8 @@ export function useSpotifyRoom({
   }, [emitListenerStatus, roomJoined, isSpotifyConnected, isPremium, isReady, inSync, playbackBlocked, roomState.source, roomState.spotifyTrack?.id]);
 
   // Handle Room State synchronization for Spotify tracks
+  // CRITICAL: Synchronizes ONLY on discrete state changes (source, URI, play/pause, scheduledStartTime, timestamp)
+  // Continuous roomState.currentTime updates are decoupled and do NOT trigger synchronization commands.
   useEffect(() => {
     // If room is NOT in Spotify mode, ensure local Spotify playback is stopped
     if (roomState.source !== 'spotify') {
@@ -134,7 +136,7 @@ export function useSpotifyRoom({
       lastTrackUriRef.current = spotifyTrack.uri;
     }
 
-    // Viewers: Automatically synchronize with room state (Option B)
+    // Viewers: Automatically synchronize with room state on discrete events
     if (role === 'viewer') {
       if (!isSpotifyConnected) {
         setStatusMessage('Spotify account not linked');
@@ -166,7 +168,9 @@ export function useSpotifyRoom({
             setStatusMessage('Playing in sync');
           } else {
             adapter.pause();
-            adapter.seekTo(roomState.currentTime);
+            if (typeof roomState.currentTime === 'number' && roomState.currentTime >= 0) {
+              adapter.seekTo(roomState.currentTime);
+            }
             setInSync(true);
             setStatusMessage('Paused');
           }
@@ -191,7 +195,6 @@ export function useSpotifyRoom({
     roomState.source,
     roomState.spotifyTrack?.uri,
     roomState.isPlaying,
-    roomState.currentTime,
     roomState.scheduledStartTime,
     roomState.spotifyState?.timestamp,
     role,

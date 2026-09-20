@@ -1,11 +1,172 @@
-// ─── Playlists API Routes ──────────────────────────────────────────────────
-// Express router for persistent playlists and universal tracks.
-
 const express = require('express');
 const logger = require('../logger');
 const playlistDb = require('./db');
+const { getUserAccessToken, getSpotifyClientCredentialsToken } = require('../music/providers/credentials');
+const { isDevFixturesEnabled, getDevFixturePlaylist } = require('../music/providers/fixtures');
 
 const router = express.Router();
+
+/**
+ * Robustly extracts the Spotify playlist ID from URLs, query parameters, or URIs.
+ * Supports:
+ * - https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=...
+ * - open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M
+ * - spotify:playlist:37i9dQZF1DXcBWIGoYBM5M
+ * - 22-character raw alphanumeric ID
+ * 
+ * @param {string} input 
+ * @returns {string|null}
+ */
+function extractSpotifyPlaylistId(input) {
+  if (!input || typeof input !== 'string') return null;
+  const trimmed = input.trim();
+
+  // Handle spotify:playlist:ID
+  const uriMatch = trimmed.match(/^spotify:playlist:([a-zA-Z0-9]+)/i);
+  if (uriMatch) return uriMatch[1];
+
+  // Handle URLs like https://open.spotify.com/playlist/ID
+  const urlMatch = trimmed.match(/(?:https?:\/\/)?(?:open\.)?spotify\.com\/playlist\/([a-zA-Z0-9]+)/i);
+  if (urlMatch) return urlMatch[1];
+
+  // If raw alphanumeric Spotify ID (typically 22 chars)
+  if (/^[a-zA-Z0-9]{22}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  return null;
+}
+
+/**
+ * Fetches playlist metadata and all paginated tracks from Spotify Web API.
+ * Uses connected user token if available, or client credentials token for public playlists.
+ * 
+ * @param {string} playlistId 
+ * @param {string} userId 
+ * @returns {Promise<Object>}
+ */
+async function fetchSpotifyPlaylist(playlistId, userId) {
+  // Check dev fixtures first if enabled in test/dev
+  if (isDevFixturesEnabled()) {
+    const fixture = getDevFixturePlaylist(playlistId);
+    if (fixture) {
+      return fixture;
+    }
+  }
+
+  let userToken = null;
+  if (userId) {
+    try {
+      userToken = await getUserAccessToken(userId, 'spotify');
+    } catch {
+      userToken = null;
+    }
+  }
+
+  // Helper to make Spotify request with specific token
+  async function callSpotify(endpoint, token) {
+    const url = endpoint.startsWith('http') ? endpoint : `https://api.spotify.com/v1${endpoint}`;
+    return fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+  }
+
+  let token = userToken;
+  let isUserAuth = Boolean(userToken);
+  let res;
+
+  try {
+    if (!token) {
+      token = await getSpotifyClientCredentialsToken();
+      isUserAuth = false;
+    }
+
+    res = await callSpotify(`/playlists/${playlistId}`, token);
+
+    // If 401 with user token, try fallback to client credentials
+    if (res.status === 401 && isUserAuth) {
+      try {
+        token = await getSpotifyClientCredentialsToken();
+        isUserAuth = false;
+        res = await callSpotify(`/playlists/${playlistId}`, token);
+      } catch {}
+    }
+  } catch (fetchErr) {
+    logger.warn('Spotify playlist fetch error:', { playlistId, error: fetchErr.message });
+    const err = new Error('Spotify playlist not found or is private. Connect your Spotify account in Settings to import private playlists.');
+    err.status = 404;
+    throw err;
+  }
+
+  if (!res.ok) {
+    if (res.status === 404) {
+      if (!isUserAuth) {
+        const err = new Error('Spotify playlist not found or is private. Connect your Spotify account in Settings to import private playlists.');
+        err.status = 404;
+        throw err;
+      }
+      const err = new Error('Spotify playlist not found');
+      err.status = 404;
+      throw err;
+    }
+    if (res.status === 403) {
+      const err = new Error('Access denied to Spotify playlist. Please ensure your Spotify account has access.');
+      err.status = 403;
+      throw err;
+    }
+    if (res.status === 429) {
+      const err = new Error('Spotify rate limit exceeded. Please try again in a few moments.');
+      err.status = 429;
+      throw err;
+    }
+    const errBody = await res.text().catch(() => '');
+    const err = new Error(`Spotify API error (HTTP ${res.status}): ${errBody}`);
+    err.status = res.status;
+    throw err;
+  }
+
+  const playlistData = await res.json();
+  const name = playlistData.name || 'Imported Spotify Playlist';
+  const description = playlistData.description || null;
+  const coverUrl = playlistData.images && playlistData.images.length > 0 ? playlistData.images[0].url : null;
+
+  // Collect items from initial page
+  let allItems = [];
+  if (playlistData.tracks && Array.isArray(playlistData.tracks.items)) {
+    allItems = [...playlistData.tracks.items];
+  }
+
+  // Paginate if next URL exists until all tracks are fetched
+  let nextUrl = playlistData.tracks ? playlistData.tracks.next : null;
+  while (nextUrl) {
+    try {
+      const nextRes = await callSpotify(nextUrl, token);
+      if (!nextRes.ok) {
+        logger.warn('Spotify playlist pagination failed at URL:', { nextUrl, status: nextRes.status });
+        break;
+      }
+      const pageData = await nextRes.json();
+      if (pageData && Array.isArray(pageData.items)) {
+        allItems = allItems.concat(pageData.items);
+      }
+      nextUrl = pageData ? pageData.next : null;
+    } catch (pageErr) {
+      logger.warn('Spotify playlist pagination error:', { error: pageErr.message });
+      break;
+    }
+  }
+
+  return {
+    id: playlistData.id,
+    name,
+    description,
+    coverUrl,
+    items: allItems
+  };
+}
 
 /**
  * Authentication check middleware for playlist routes.
@@ -15,6 +176,35 @@ router.use((req, res, next) => {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   next();
+});
+
+// POST /api/playlists/import/spotify — Import playlist from Spotify Web API
+router.post('/import/spotify', async (req, res) => {
+  const { playlistUrl } = req.body || {};
+
+  if (!playlistUrl || typeof playlistUrl !== 'string' || !playlistUrl.trim()) {
+    return res.status(400).json({ error: 'playlistUrl is required' });
+  }
+
+  const playlistId = extractSpotifyPlaylistId(playlistUrl);
+  if (!playlistId) {
+    return res.status(400).json({ error: 'Invalid Spotify playlist URL or URI' });
+  }
+
+  try {
+    const spotifyData = await fetchSpotifyPlaylist(playlistId, req.userId);
+    const result = await playlistDb.importSpotifyPlaylist(req.userId, spotifyData);
+    logger.info('Spotify playlist imported successfully', {
+      userId: req.userId,
+      playlistId: result.playlist.id,
+      name: result.playlist.name,
+      added: result.summary.added
+    });
+    res.status(201).json({ success: true, ...result });
+  } catch (err) {
+    logger.error('Error importing Spotify playlist', { userId: req.userId, playlistUrl, error: err.message });
+    res.status(err.status || 500).json({ error: err.message || 'Failed to import Spotify playlist' });
+  }
 });
 
 // GET /api/playlists — List user's playlists with track counts

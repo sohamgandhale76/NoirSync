@@ -762,6 +762,121 @@ async function cleanupInvalidPlaylistTracks(client = pool, { force = false } = {
   return { executed: true, deletedCount };
 }
 
+/**
+ * Import a Spotify playlist into NoirSync for the authenticated user.
+ * Atomically creates the playlist and its playlist_tracks within a single transaction.
+ * Preserves ordering, resolves canonical tracks, skips local/unavailable tracks, and deduplicates.
+ * 
+ * @param {string} userId 
+ * @param {Object} spotifyPlaylistData 
+ * @returns {Promise<{ playlist: Object, summary: Object }>}
+ */
+async function importSpotifyPlaylist(userId, spotifyPlaylistData) {
+  if (!userId) {
+    const err = new Error('Unauthorized');
+    err.status = 401;
+    throw err;
+  }
+
+  const { name, description, items } = spotifyPlaylistData;
+  const playlistName = (name && typeof name === 'string' && name.trim()) ? name.trim() : 'Imported Spotify Playlist';
+
+  // 1. Process items in memory first
+  let total = 0;
+  let added = 0;
+  let unavailable = 0;
+  let duplicates = 0;
+
+  const seenSpotifyIds = new Set();
+  const tracksToAdd = [];
+
+  for (const item of (items || [])) {
+    total++;
+    const track = item && item.track;
+
+    // Check if track is valid Spotify track (not null, not local file, has ID)
+    if (!track || !track.id || track.is_local) {
+      unavailable++;
+      continue;
+    }
+
+    // Check duplicate within playlist (preserve first occurrence)
+    if (seenSpotifyIds.has(track.id)) {
+      duplicates++;
+      continue;
+    }
+    seenSpotifyIds.add(track.id);
+
+    tracksToAdd.push({
+      provider: 'spotify',
+      providerTrackId: track.id,
+      title: track.name || 'Untitled Track',
+      artist: track.artists ? track.artists.map(a => a.name).join(', ') : 'Unknown Artist',
+      album: track.album ? track.album.name : undefined,
+      duration: track.duration_ms ? track.duration_ms / 1000 : undefined,
+      coverUrl: (track.album && track.album.images && track.album.images.length > 0) ? track.album.images[0].url : undefined,
+      externalUrl: (track.external_urls && track.external_urls.spotify) ? track.external_urls.spotify : `https://open.spotify.com/track/${track.id}`
+    });
+  }
+
+  // 2. Pre-resolve canonical tracks via atomic UPSERTs in tracks table
+  const resolvedTracks = [];
+  for (const trackData of tracksToAdd) {
+    try {
+      const canonicalTrack = await resolveProviderTrack(trackData);
+      resolvedTracks.push(canonicalTrack);
+    } catch {
+      unavailable++;
+    }
+  }
+
+  // 3. Atomically create the NoirSync playlist and insert all playlist_tracks in one transaction
+  const client = await pool.connect();
+  const playlistId = `pl_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
+  const now = Date.now();
+  const desc = typeof description === 'string' ? description.trim() : null;
+
+  try {
+    await client.query('BEGIN');
+
+    await client.query(`
+      INSERT INTO playlists (id, user_id, name, description, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6)
+    `, [playlistId, userId, playlistName, desc, now, now]);
+
+    for (let pos = 0; pos < resolvedTracks.length; pos++) {
+      const canonicalTrack = resolvedTracks[pos];
+      const ptId = `pt_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
+
+      await client.query(`
+        INSERT INTO playlist_tracks (id, playlist_id, track_id, position, added_at)
+        VALUES ($1, $2, $3, $4, $5)
+      `, [ptId, playlistId, canonicalTrack.id, pos, now]);
+      added++;
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  const fullPlaylist = await getPlaylistById(playlistId, userId);
+
+  return {
+    playlist: fullPlaylist,
+    summary: {
+      playlistName,
+      total,
+      added,
+      unavailable,
+      duplicates
+    }
+  };
+}
+
 module.exports = {
   ensureTrackExists,
   getUserPlaylists,
@@ -773,5 +888,6 @@ module.exports = {
   removeTrackFromPlaylist,
   reorderPlaylistTracks,
   isTrackAccessible,
-  cleanupInvalidPlaylistTracks
+  cleanupInvalidPlaylistTracks,
+  importSpotifyPlaylist
 };

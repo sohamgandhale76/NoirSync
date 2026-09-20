@@ -1,10 +1,5 @@
-const { Pool } = require('pg');
 const { v4: uuidv4 } = require('uuid');
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-});
+const { pool } = require('../db');
 
 /**
  * Resolves a ProviderTrack into a NoirSync Track ID.

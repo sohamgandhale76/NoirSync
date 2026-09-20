@@ -80,9 +80,9 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
   const [bufferedPercent, setBufferedPercent] = useState(0);
   const [duration, setDuration] = useState(0);
 
-  // Wire up NTP-scheduled play
+  // Wire up NTP-scheduled play (disabled in Spotify mode)
   useAudioSync(
-    adapter,
+    roomState.source === 'spotify' ? null : adapter,
     roomState.scheduledStartTime,
     roomState.currentTime,
     roomState.isPlaying,
@@ -97,15 +97,18 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
     }
   }, [roomState.source, roomState.duration, roomState.spotifyTrack?.durationMs, adapter]);
 
-  // Position updates for Spotify mode
+  // Position updates for Spotify mode (single 200ms progress timer)
   useEffect(() => {
     if (roomState.source !== 'spotify') return;
-    const unsubTime = spotifyAdapter.on('timeupdate', () => {
-      setCurrentTime(spotifyAdapter.getCurrentTime());
-      if (spotifyAdapter.getDuration() > 0) {
-        setDuration(spotifyAdapter.getDuration());
-      }
+
+    const dur = spotifyAdapter.getDuration();
+    if (dur > 0) setDuration(dur);
+
+    const unsubDuration = spotifyAdapter.on('durationchange', () => {
+      const d = spotifyAdapter.getDuration();
+      if (d > 0) setDuration(d);
     });
+
     const interval = setInterval(() => {
       if (roomState.isPlaying) {
         if (isSpotifyConnected && isSpotifyInSync) {
@@ -120,9 +123,10 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
       } else {
         setCurrentTime(roomState.currentTime);
       }
-    }, 250);
+    }, 200);
+
     return () => {
-      unsubTime();
+      unsubDuration();
       clearInterval(interval);
     };
   }, [roomState.source, roomState.isPlaying, roomState.currentTime, roomState.scheduledStartTime, roomState.spotifyState?.timestamp, spotifyAdapter, isSpotifyConnected, isSpotifyInSync]);
@@ -271,8 +275,9 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
     triggerPrefetch(roomState.chunkIndex);
   }, [roomState.chunkIndex, triggerPrefetch]);
 
-  // ── Also prefetch when audio advances ─────────────────────────────────
+  // ── Also prefetch when audio advances (local audio only) ─────────────
   useEffect(() => {
+    if (roomState.source === 'spotify') return;
     const audio = adapter;
     if (!audio) return;
 
@@ -323,7 +328,7 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
       unsubProgress();
       unsubMetadata();
     };
-  }, [triggerPrefetch, updateBuffered, adapter]);
+  }, [roomState.source, triggerPrefetch, updateBuffered, adapter]);
 
   const handleSyncAudio = useCallback(() => {
     const audio = adapter;

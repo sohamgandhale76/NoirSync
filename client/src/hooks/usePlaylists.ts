@@ -201,6 +201,36 @@ export function usePlaylists() {
     }
   }, []);
 
+  const importSpotifyPlaylist = useCallback(async (playlistUrl: string): Promise<{
+    playlist: Playlist;
+    summary: {
+      playlistName: string;
+      total: number;
+      added: number;
+      unavailable: number;
+      duplicates: number;
+    };
+  }> => {
+    setError(null);
+    try {
+      const res = await fetch(`${SERVER_URL}/api/playlists/import/spotify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ playlistUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to import Spotify playlist');
+      }
+      setPlaylists((prev) => [data.playlist, ...prev.filter((p) => p.id !== data.playlist.id)]);
+      return data;
+    } catch (err: any) {
+      setError(err.message || 'Failed to import Spotify playlist');
+      throw err;
+    }
+  }, []);
+
   useEffect(() => {
     fetchPlaylists();
   }, [fetchPlaylists]);
@@ -212,6 +242,7 @@ export function usePlaylists() {
     fetchPlaylists,
     getPlaylist,
     createPlaylist,
+    importSpotifyPlaylist,
     updatePlaylist,
     renamePlaylist,
     deletePlaylist,
