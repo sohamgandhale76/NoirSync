@@ -339,14 +339,22 @@ async function runRegression() {
     assert.strictEqual(userTrackAfter.user_id, userA, 'User ownership cannot be mutated');
     console.log('   ✓ Private tracks cannot be accessed or mutated through catalog.\n');
 
-    // ── TEST 18: Phase 6B/6C regression integrity verification ──
-    console.log('18. Verifying Phase 6B/6C regression integrity...');
-    assert.strictEqual(playlistDb.isTrackAccessible(privateTrackA, userA), true, 'Owner can access own track');
-    assert.strictEqual(playlistDb.isTrackAccessible(privateTrackA, userB), false, 'Non-owner cannot access private track');
+    // ── TEST 18: Ownership and access integrity verification ──
+    console.log('18. Verifying ownership and access integrity...');
+    const privateNoAudio = await db.insertTrack({
+      id: `trk_priv_no_audio_${testRunId}`,
+      title: 'Private No Audio',
+      user_id: userA,
+      audio_key: null,
+      provider: 'local',
+    });
+    assert.strictEqual(playlistDb.isTrackAccessible(privateNoAudio, userA), true, 'Owner can access own track');
+    assert.strictEqual(playlistDb.isTrackAccessible(privateNoAudio, userB), false, 'Non-owner cannot access private track without audio_key');
+    assert.strictEqual(playlistDb.isTrackAccessible(privateTrackA, userB), true, 'Shared Cloud track accessible to user B');
     assert.strictEqual(playlistDb.isTrackAccessible(legacyLocalTrack, userA), false, 'Legacy NULL local track inaccessible');
     assert.strictEqual(playlistDb.isTrackAccessible(canonSpotify, userA), true, 'Canonical provider track accessible to user A');
     assert.strictEqual(playlistDb.isTrackAccessible(canonSpotify, userB), true, 'Canonical provider track accessible to user B');
-    console.log('   ✓ Phase 6B/6C ownership and access invariants fully preserved.\n');
+    console.log('   ✓ Ownership and access invariants fully preserved.\n');
 
     // ── TEST 19: Phase 6D Room isolation invariant preservation ──
     console.log('19. Verifying Phase 6D room isolation invariant preservation...');

@@ -8,10 +8,12 @@ const { isCanonicalProvider } = require('../music/registry');
 
 /**
  * Check if a track is accessible to the requesting user for playlist operations.
- * - Requester-owned private track (track.user_id === userId) -> accessible
+ * - Authenticated users can access valid persistent Cloud/R2 tracks (track.audio_key != null)
+ * - Requester-owned track (track.user_id === userId) -> accessible
  * - Canonical provider metadata record (isCanonicalProvider(track.provider)) -> accessible
- * - Orphaned local tracks (provider === 'local' && user_id === null) -> INACCESSIBLE
- * - Another user's private track (user_id !== userId) -> INACCESSIBLE
+ * - Published NoirSync public catalog track (noirsync_public && publication_status === 'published') -> accessible
+ * - Orphaned/legacy local tracks (provider === 'local' && user_id === null && audio_key === null) -> INACCESSIBLE
+ * - Another user's track with NO audio_key (user_id !== userId && !audio_key) -> INACCESSIBLE
  * 
  * @param {Object} track 
  * @param {string} userId 
@@ -19,9 +21,18 @@ const { isCanonicalProvider } = require('../music/registry');
  */
 function isTrackAccessible(track, userId) {
   if (!track) return false;
-  if (track.user_id && track.user_id === userId) {
+
+  // 1. Authenticated users can access valid persistent Cloud/R2 tracks
+  if (userId && track.audio_key) {
     return true;
   }
+
+  // 2. Requester-owned track (even if audio_key is null)
+  if (userId && track.user_id && track.user_id === userId) {
+    return true;
+  }
+
+  // 3. Canonical provider metadata records
   if (isCanonicalProvider(track.provider)) {
     // If noirsync_public, must be explicitly published
     if (track.provider === 'noirsync_public') {
@@ -29,6 +40,7 @@ function isTrackAccessible(track, userId) {
     }
     return true;
   }
+
   return false;
 }
 
@@ -731,6 +743,7 @@ async function cleanupInvalidPlaylistTracks(client = pool, { force = false } = {
       AND pt.track_id = t.id
       AND p.user_id != t.user_id
       AND t.user_id IS NOT NULL
+      AND t.audio_key IS NULL
   `);
 
   const deletedCount = deleteRes.rowCount || 0;

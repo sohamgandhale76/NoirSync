@@ -73,9 +73,8 @@ async function runTests() {
     console.log('   ✓ formatUniversalTrack generates standard YouTube thumbnail.\n');
 
     // ── TEST 4: searchCatalog enriches DB row lacking cover with live provider artwork ──
-    console.log('4. Testing searchCatalog artwork enrichment (DB row + live provider)...');
-    // Insert a DB row that has no cover_key
     const spotFixtureId = '4cOdK2wGLETKBW3PvgPWqT'; // Rick Astley
+    await pool.query('DELETE FROM tracks WHERE provider = $1 AND provider_track_id = $2', ['spotify', spotFixtureId]);
     const testDbTrack = await insertTrack({
       id: `ext_spot_nocover_${runId}`,
       title: 'Never Gonna Give You Up',
@@ -130,6 +129,10 @@ async function runTests() {
     console.error('REGRESSION FAILURE:', err);
     process.exit(1);
   } finally {
+    try {
+      await pool.query('DELETE FROM tracks WHERE provider = $1 AND provider_track_id = $2', ['spotify', '4cOdK2wGLETKBW3PvgPWqT']);
+      await pool.query('DELETE FROM tracks WHERE id LIKE $1', [`%${runId}%`]);
+    } catch {}
     await pool.end();
   }
 }
