@@ -1,4 +1,4 @@
-// ─── NoirSync Server Entry Point ──────────────────────────────────────────
+﻿// ─── NoirSync Server Entry Point ──────────────────────────────────────────
 // Express + Socket.io backend with:
 //   • Helmet security headers
 //   • CORS configuration
@@ -825,7 +825,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  // ── Host: Load Library Track ──────────────────────────────────────────
+  // â”€â”€ Host: Load Library Track â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   socket.on('host:load_library_track', async ({ roomId, trackId }) => {
     const room = requireHost(roomId, 'load_library_track');
     if (!room) return;
@@ -878,7 +878,66 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ── Host: Update Track Metadata ──
+  // â”€â”€ Host: Load Spotify Track â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  socket.on('host:load_spotify_track', async ({ roomId, track }) => {
+    const room = requireHost(roomId, 'load_spotify_track');
+    if (!room) return;
+
+    if (!track || (!track.id && !track.uri)) {
+      socket.emit('room:error', { message: 'Invalid Spotify track data.' });
+      return;
+    }
+
+    try {
+      room.setSpotifyTrack(track);
+
+      // Attempt to fetch synced lyrics from public LRCLIB service as non-blocking enhancement
+      try {
+        const title = track.title || '';
+        const artist = track.artist || '';
+        const duration = track.duration || Math.round((track.durationMs || 0) / 1000);
+        if (title && artist) {
+          const lrcUrl = 'https://lrclib.net/api/get?track_name=' + encodeURIComponent(title) + '&artist_name=' + encodeURIComponent(artist) + (duration ? ('&duration=' + duration) : '');
+          const lyrRes = await fetch(lrcUrl, {
+            headers: { 'User-Agent': 'NoirSync/1.0 (https://noirsync.onrender.com)' },
+            signal: AbortSignal.timeout(3000)
+          });
+          if (lyrRes.ok) {
+            const lyrData = await lyrRes.json();
+            if (lyrData && lyrData.syncedLyrics) {
+              const { parseLrc } = require('./lrcParser');
+              const parsed = parseLrc(lyrData.syncedLyrics);
+              room.setState({
+                lyrics: parsed.lines || [],
+                lrcMeta: {
+                  title: parsed.meta?.title || title,
+                  artist: parsed.meta?.artist || artist,
+                  album: parsed.meta?.album || track.album || ''
+                }
+              });
+            }
+          }
+        }
+      } catch (lyrErr) {
+        logger.debug('LRCLIB lyrics fetch skipped/failed (non-fatal)', { error: lyrErr.message });
+      }
+
+      // Broadcast state to all users in the room
+      io.to(roomId).emit('sync:track_loaded', room.getState());
+      logger.info('Spotify track loaded in room', {
+        roomId,
+        trackId: track.id,
+        title: track.title,
+        artist: track.artist,
+        hasLyrics: room.state.lyrics.length > 0
+      });
+    } catch (err) {
+      logger.error('Failed to load Spotify track into room', { error: err.message });
+      socket.emit('room:error', { message: 'Failed to load Spotify track.' });
+    }
+  });
+
+  // â”€â”€ Host: Update Track Metadata â”€â”€
   socket.on('host:update_track_metadata', (data) => {
     const { roomId, ...metadata } = data;
     const room = requireHost(roomId, 'update_track_metadata');
@@ -901,7 +960,7 @@ io.on('connection', (socket) => {
     logger.info('Track metadata updated in room', { roomId, songName: room.state.songName, totalChunks: room.state.totalChunks });
   });
 
-  // ── Host: Update Queue ──
+  // â”€â”€ Host: Update Queue â”€â”€
   socket.on('host:update_queue', ({ roomId, queue, currentQueueIndex }) => {
     const room = requireHost(roomId, 'update_queue');
     if (!room) return;
@@ -915,30 +974,56 @@ io.on('connection', (socket) => {
     logger.debug('Queue updated in room', { roomId, queueSize: (queue || []).length, currentIndex: currentQueueIndex });
   });
 
-  // ── Host: Play ────────────────────────────────────────────────────────
+  // â”€â”€ Host: Play â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   socket.on('host:play', ({ roomId, currentTime, chunkIndex }) => {
     const room = requireHost(roomId, 'play');
     if (!room) return;
 
     // Schedule 250ms ahead so all clients can buffer and start together
     const scheduledStartTime = Date.now() + 250;
-    room.setState({ isPlaying: true, currentTime, chunkIndex, scheduledStartTime });
+    const updates = { isPlaying: true, currentTime, chunkIndex, scheduledStartTime };
+    if (room.state.source === 'spotify') {
+      updates.spotifyState = {
+        isPlaying: true,
+        positionMs: Math.round((currentTime || 0) * 1000),
+        timestamp: scheduledStartTime
+      };
+    }
+    room.setState(updates);
 
-    io.to(roomId).emit('sync:play', { scheduledStartTime, currentTime, chunkIndex });
-    logger.info('Play scheduled', { roomId, currentTime, chunkIndex, scheduledStartTime });
+    io.to(roomId).emit('sync:play', {
+      scheduledStartTime,
+      currentTime,
+      chunkIndex,
+      source: room.state.source,
+      spotifyState: updates.spotifyState
+    });
+    logger.info('Play scheduled', { roomId, currentTime, chunkIndex, scheduledStartTime, source: room.state.source });
   });
 
-  // ── Host: Pause ───────────────────────────────────────────────────────
+  // â”€â”€ Host: Pause â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   socket.on('host:pause', ({ roomId, currentTime }) => {
     const room = requireHost(roomId, 'pause');
     if (!room) return;
 
-    room.setState({ isPlaying: false, currentTime, scheduledStartTime: null });
-    io.to(roomId).emit('sync:pause', { currentTime });
-    logger.info('Paused', { roomId, currentTime });
+    const updates = { isPlaying: false, currentTime, scheduledStartTime: null };
+    if (room.state.source === 'spotify') {
+      updates.spotifyState = {
+        isPlaying: false,
+        positionMs: Math.round((currentTime || 0) * 1000),
+        timestamp: Date.now()
+      };
+    }
+    room.setState(updates);
+    io.to(roomId).emit('sync:pause', {
+      currentTime,
+      source: room.state.source,
+      spotifyState: updates.spotifyState
+    });
+    logger.info('Paused', { roomId, currentTime, source: room.state.source });
   });
 
-  // ── Host: Seek ────────────────────────────────────────────────────────
+  // â”€â”€ Host: Seek â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   socket.on('host:seek', ({ roomId, currentTime, chunkIndex }) => {
     const room = requireHost(roomId, 'seek');
     if (!room) return;
@@ -947,25 +1032,55 @@ io.on('connection', (socket) => {
     if (room.state.isPlaying) {
       updates.scheduledStartTime = Date.now() + 250;
     }
+    if (room.state.source === 'spotify') {
+      updates.spotifyState = {
+        isPlaying: room.state.isPlaying,
+        positionMs: Math.round((currentTime || 0) * 1000),
+        timestamp: updates.scheduledStartTime || Date.now()
+      };
+    }
     room.setState(updates);
     room.gcOldChunks(chunkIndex);
 
-    io.to(roomId).emit('sync:seek', updates);
-    logger.info('Seek', { roomId, currentTime, chunkIndex, scheduledStartTime: updates.scheduledStartTime });
+    io.to(roomId).emit('sync:seek', {
+      ...updates,
+      source: room.state.source,
+      spotifyState: updates.spotifyState
+    });
+    logger.info('Seek', { roomId, currentTime, chunkIndex, scheduledStartTime: updates.scheduledStartTime, source: room.state.source });
   });
 
-  // ── Host: Chunk playing (trigger GC) ─────────────────────────────────
+  // â”€â”€ Listener: Spotify Status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  socket.on('spotify:listener_status', ({ roomId, isConnected, isPremium, isReady, inSync, status }) => {
+    if (!roomId) return;
+    const room = roomManager.getRoom(roomId.toUpperCase());
+    if (!room) return;
+
+    room.updateSpotifyListener(socket.id, {
+      isConnected,
+      isPremium,
+      isReady,
+      inSync,
+      status
+    });
+
+    io.to(roomId.toUpperCase()).emit('sync:spotify_listeners', {
+      listeners: Array.from(room.spotifyListeners.values())
+    });
+  });
+
+  // â”€â”€ Host: Chunk playing (trigger GC) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   socket.on('host:chunk_playing', ({ roomId, chunkIndex }) => {
     const room = requireHost(roomId, 'chunk_playing');
     if (room) room.gcOldChunks(chunkIndex);
   });
 
-  // ── NTP ping/pong ─────────────────────────────────────────────────────
+  // â”€â”€ NTP ping/pong â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   socket.on('ntp:ping', ({ clientSendTime }) => {
     socket.emit('ntp:pong', { clientSendTime, serverTime: Date.now() });
   });
 
-  // ── Disconnect ────────────────────────────────────────────────────────
+  // â”€â”€ Disconnect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   socket.on('disconnect', (reason) => {
     const roomId = roomManager.removeMember(socket.id);
     logger.info('Socket disconnected', { socketId: socket.id, reason, roomId });
@@ -977,6 +1092,7 @@ io.on('connection', (socket) => {
           socketId: socket.id,
           memberCount: room.getMemberCount(),
           members: room.getMembersArray(),
+          spotifyListeners: Array.from(room.spotifyListeners.values()),
         });
       }
     }

@@ -38,6 +38,7 @@ interface StorageStats {
 interface LibraryProps {
   onSelectTrack?: (track: R2Track, signedUrl: string) => void;
   onLoadToRoom?: (track: R2Track, signedUrl: string) => void;
+  onPlaySpotifyTrack?: (track: ProviderTrack) => void;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -601,9 +602,11 @@ function UploadSidebar({
 function SpotifyTrackCard({
   track,
   onAddToPlaylist,
+  onPlayInRoom,
 }: {
   track: ProviderTrack;
   onAddToPlaylist: (track: ProviderTrack) => void;
+  onPlayInRoom?: (track: ProviderTrack) => void;
 }) {
   return (
     <GlassPanel className="p-3 sm:p-3.5 rounded-xl border border-noir-border/50 hover:border-noir-border bg-noir-charcoal/30 hover:bg-noir-charcoal/60 transition-all duration-200 flex items-center gap-3 sm:gap-3.5 group relative">
@@ -630,11 +633,11 @@ function SpotifyTrackCard({
           {track.artist}
         </p>
         <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-          <span className="px-2 py-0.5 rounded-full text-[9px] font-mono tracking-wider font-semibold uppercase bg-[#1db954]/10 text-[#1db954] border border-[#1db954]/30">
+          <span className="px-2 py-0.5 rounded-full text-[9px] font-mono tracking-wider font-semibold uppercase bg-[#1db954]/15 text-[#1db954] border border-[#1db954]/30">
             Spotify
           </span>
-          <span className="px-2 py-0.5 rounded-full text-[9px] font-mono tracking-wider font-semibold uppercase bg-noir-graphite/60 text-noir-ash border border-noir-border/50">
-            Metadata Only
+          <span className="px-2 py-0.5 rounded-full text-[9px] font-mono tracking-wider font-semibold uppercase bg-[#1db954]/10 text-[#1db954] border border-[#1db954]/20">
+            Web Playback
           </span>
           {track.album && (
             <span className="font-mono text-[10px] text-noir-dim truncate max-w-[150px]" title={track.album}>
@@ -649,8 +652,19 @@ function SpotifyTrackCard({
         </div>
       </div>
 
-      {/* Actions: Add to Playlist, Open in Spotify */}
+      {/* Actions: Play in Room, Add to Playlist, Open in Spotify */}
       <div className="flex items-center gap-2 shrink-0">
+        {onPlayInRoom && (
+          <button
+            onClick={() => onPlayInRoom(track)}
+            title="Play in Room"
+            className="btn-noir h-8 px-2.5 sm:px-3 rounded-lg text-xs font-ui font-medium border border-[#1db954]/40 text-[#1db954] hover:bg-[#1db954]/15 flex items-center gap-1.5 transition-all cursor-pointer"
+          >
+            <span>▶</span>
+            <span className="hidden sm:inline">Play in Room</span>
+          </button>
+        )}
+
         <button
           onClick={() => onAddToPlaylist(track)}
           title="Add to Playlist"
@@ -693,8 +707,10 @@ const QUICK_SEARCH_CHIPS = [
 
 function SpotifyDiscoveryView({
   onAddToPlaylist,
+  onPlayInRoom,
 }: {
   onAddToPlaylist: (track: ProviderTrack) => void;
+  onPlayInRoom?: (track: ProviderTrack) => void;
 }) {
   const { searchMusic, results, loading, error } = useMusicSearch();
   const {
@@ -1006,8 +1022,8 @@ function SpotifyDiscoveryView({
             <p className="font-ui text-xs text-noir-ash max-w-sm">
               Search millions of tracks on Spotify. View verified metadata, artists, and album art, and add tracks to your NoirSync playlists.
             </p>
-            <div className="mt-2 px-3 py-1 rounded-full bg-noir-graphite/60 border border-noir-border/40 text-[10px] font-mono text-noir-dim">
-              Spotify tracks are metadata-only (no direct playback)
+            <div className="mt-2 px-3 py-1 rounded-full bg-[#1db954]/10 border border-[#1db954]/30 text-[10px] font-mono text-[#1db954]">
+              Spotify Web Playback (stream in synced rooms)
             </div>
           </div>
         ) : spotifyResult?.results.length === 0 ? (
@@ -1036,6 +1052,7 @@ function SpotifyDiscoveryView({
                   key={track.providerTrackId}
                   track={track}
                   onAddToPlaylist={onAddToPlaylist}
+                  onPlayInRoom={onPlayInRoom}
                 />
               ))}
             </div>
@@ -1060,7 +1077,7 @@ interface ModalTrackData {
   external_url?: string | null;
 }
 
-export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
+export function Library({ onSelectTrack, onLoadToRoom, onPlaySpotifyTrack }: LibraryProps) {
   const { user, login: authLogin, register: authRegister } = useAuth();
   const isGuest = !user || user.isGuest;
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -1348,7 +1365,10 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
           </>
         ) : (
           /* ── Spotify Discovery View ── */
-          <SpotifyDiscoveryView onAddToPlaylist={handleSpotifyAddToPlaylist} />
+          <SpotifyDiscoveryView
+            onAddToPlaylist={handleSpotifyAddToPlaylist}
+            onPlayInRoom={onPlaySpotifyTrack}
+          />
         )}
       </div>
 

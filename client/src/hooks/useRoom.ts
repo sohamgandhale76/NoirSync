@@ -7,6 +7,18 @@ export interface MemberInfo {
   displayName: string;
 }
 
+export interface SpotifyListenerInfo {
+  socketId: string;
+  userId: string | null;
+  displayName: string;
+  isConnected: boolean;
+  isPremium: boolean;
+  isReady: boolean;
+  inSync: boolean;
+  status: string;
+  updatedAt?: number;
+}
+
 export interface RoomState {
   isPlaying: boolean;
   currentTime: number;
@@ -19,10 +31,30 @@ export interface RoomState {
   members: MemberInfo[];
   libraryTrackId: string | null;
   coverFilename: string | null;
+  coverUrl?: string | null;
+  duration?: number;
+  durationMs?: number;
   lyrics: Array<{ time: number; text: string }>;
   lrcMeta: { title?: string; artist?: string; album?: string };
   queue: any[];
   currentQueueIndex: number;
+  source?: 'local' | 'spotify';
+  spotifyTrack?: {
+    id: string;
+    uri: string;
+    title: string;
+    artist: string;
+    album: string;
+    coverUrl: string | null;
+    duration: number;
+    durationMs: number;
+  } | null;
+  spotifyState?: {
+    isPlaying: boolean;
+    positionMs: number;
+    timestamp: number;
+  } | null;
+  spotifyListeners?: SpotifyListenerInfo[];
 }
 
 const DEFAULT_STATE: RoomState = {
@@ -37,10 +69,17 @@ const DEFAULT_STATE: RoomState = {
   members: [],
   libraryTrackId: null,
   coverFilename: null,
+  coverUrl: null,
+  duration: 0,
+  durationMs: 0,
   lyrics: [],
   lrcMeta: {},
   queue: [],
   currentQueueIndex: -1,
+  source: 'local',
+  spotifyTrack: null,
+  spotifyState: null,
+  spotifyListeners: [],
 };
 
 export interface UseRoomReturn {
@@ -52,6 +91,8 @@ export interface UseRoomReturn {
   emitSeek: (currentTime: number, chunkIndex: number) => void;
   emitChunkPlaying: (chunkIndex: number) => void;
   emitLoadLibraryTrack: (trackId: string) => void;
+  emitLoadSpotifyTrack: (track: any) => void;
+  emitSpotifyListenerStatus: (status: Partial<SpotifyListenerInfo>) => void;
   emitUpdateQueue: (queue: any[], currentQueueIndex: number) => void;
   emitUpdateTrackMetadata: (metadata: Partial<RoomState>) => void;
 }
@@ -92,41 +133,70 @@ export function useRoom(
       setRoomState((s) => ({ ...s, memberCount, members }));
     };
 
-    const handleMemberLeft = ({ memberCount, members }: { memberCount: number; members: MemberInfo[] }) => {
-      setRoomState((s) => ({ ...s, memberCount, members }));
+    const handleMemberLeft = ({ memberCount, members, spotifyListeners }: { memberCount: number; members: MemberInfo[]; spotifyListeners?: SpotifyListenerInfo[] }) => {
+      setRoomState((s) => ({
+        ...s,
+        memberCount,
+        members,
+        ...(spotifyListeners ? { spotifyListeners } : {})
+      }));
     };
 
     const handleSyncPlay = (data: {
       scheduledStartTime: number;
       currentTime: number;
       chunkIndex: number;
+      source?: 'local' | 'spotify';
+      spotifyState?: any;
     }) => {
-      setRoomState((s) => ({ ...s, isPlaying: true, ...data }));
+      setRoomState((s) => ({
+        ...s,
+        isPlaying: true,
+        ...data,
+        source: data.source || s.source,
+        spotifyState: data.spotifyState || s.spotifyState
+      }));
     };
 
-    const handleSyncPause = ({ currentTime }: { currentTime: number }) => {
-      setRoomState((s) => ({ ...s, isPlaying: false, currentTime }));
+    const handleSyncPause = (data: { currentTime: number; source?: 'local' | 'spotify'; spotifyState?: any }) => {
+      setRoomState((s) => ({
+        ...s,
+        isPlaying: false,
+        currentTime: data.currentTime,
+        source: data.source || s.source,
+        spotifyState: data.spotifyState || s.spotifyState
+      }));
     };
 
-    const handleSyncSeek = (data: { currentTime: number; chunkIndex: number; scheduledStartTime?: number | null }) => {
-      setRoomState((s) => ({ ...s, ...data }));
+    const handleSyncSeek = (data: { currentTime: number; chunkIndex: number; scheduledStartTime?: number | null; source?: 'local' | 'spotify'; spotifyState?: any }) => {
+      setRoomState((s) => ({
+        ...s,
+        ...data,
+        source: data.source || s.source,
+        spotifyState: data.spotifyState || s.spotifyState
+      }));
     };
 
     const handleSyncTrackLoaded = (state: RoomState) => {
       setRoomState((prev) => ({ ...prev, ...state }));
     };
 
+    const handleSyncSpotifyListeners = ({ listeners }: { listeners: SpotifyListenerInfo[] }) => {
+      setRoomState((s) => ({ ...s, spotifyListeners: listeners }));
+    };
+
     // Register all listeners
-    socket.on('connect',           handleConnect);
-    socket.on('disconnect',        handleDisconnect);
-    socket.on('room:joined',       handleRoomJoined);
-    socket.on('room:error',        handleRoomError);
-    socket.on('room:member_joined', handleMemberJoined);
-    socket.on('room:member_left',  handleMemberLeft);
-    socket.on('sync:play',         handleSyncPlay);
-    socket.on('sync:pause',        handleSyncPause);
-    socket.on('sync:seek',         handleSyncSeek);
-    socket.on('sync:track_loaded',  handleSyncTrackLoaded);
+    socket.on('connect',                 handleConnect);
+    socket.on('disconnect',              handleDisconnect);
+    socket.on('room:joined',             handleRoomJoined);
+    socket.on('room:error',              handleRoomError);
+    socket.on('room:member_joined',       handleMemberJoined);
+    socket.on('room:member_left',        handleMemberLeft);
+    socket.on('sync:play',               handleSyncPlay);
+    socket.on('sync:pause',              handleSyncPause);
+    socket.on('sync:seek',               handleSyncSeek);
+    socket.on('sync:track_loaded',        handleSyncTrackLoaded);
+    socket.on('sync:spotify_listeners',   handleSyncSpotifyListeners);
 
     // If already connected, join immediately
     if (socket.connected) {
@@ -134,16 +204,17 @@ export function useRoom(
     }
 
     return () => {
-      socket.off('connect',            handleConnect);
-      socket.off('disconnect',         handleDisconnect);
-      socket.off('room:joined',        handleRoomJoined);
-      socket.off('room:error',         handleRoomError);
-      socket.off('room:member_joined', handleMemberJoined);
-      socket.off('room:member_left',   handleMemberLeft);
-      socket.off('sync:play',          handleSyncPlay);
-      socket.off('sync:pause',         handleSyncPause);
-      socket.off('sync:seek',          handleSyncSeek);
-      socket.off('sync:track_loaded',  handleSyncTrackLoaded);
+      socket.off('connect',                 handleConnect);
+      socket.off('disconnect',              handleDisconnect);
+      socket.off('room:joined',             handleRoomJoined);
+      socket.off('room:error',              handleRoomError);
+      socket.off('room:member_joined',       handleMemberJoined);
+      socket.off('room:member_left',        handleMemberLeft);
+      socket.off('sync:play',               handleSyncPlay);
+      socket.off('sync:pause',              handleSyncPause);
+      socket.off('sync:seek',               handleSyncSeek);
+      socket.off('sync:track_loaded',        handleSyncTrackLoaded);
+      socket.off('sync:spotify_listeners',   handleSyncSpotifyListeners);
     };
   }, [roomId, role, displayName]);
 
@@ -167,6 +238,14 @@ export function useRoom(
     socketRef.current.emit('host:load_library_track', { roomId: roomIdRef.current, trackId });
   }, []);
 
+  const emitLoadSpotifyTrack = useCallback((track: any) => {
+    socketRef.current.emit('host:load_spotify_track', { roomId: roomIdRef.current, track });
+  }, []);
+
+  const emitSpotifyListenerStatus = useCallback((info: Partial<SpotifyListenerInfo>) => {
+    socketRef.current.emit('spotify:listener_status', { roomId: roomIdRef.current, ...info });
+  }, []);
+
   const emitUpdateQueue = useCallback((queue: any[], currentQueueIndex: number) => {
     socketRef.current.emit('host:update_queue', { roomId: roomIdRef.current, queue, currentQueueIndex });
   }, []);
@@ -184,6 +263,8 @@ export function useRoom(
     emitSeek,
     emitChunkPlaying,
     emitLoadLibraryTrack,
+    emitLoadSpotifyTrack,
+    emitSpotifyListenerStatus,
     emitUpdateQueue,
     emitUpdateTrackMetadata,
   };

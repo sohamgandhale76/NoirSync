@@ -154,7 +154,7 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
    * If current track is not yet cued on this player, issues start command to Spotify Connect.
    * Subsequent play calls use player.resume().
    */
-  async play(): Promise<void> {
+  async play(positionMs?: number): Promise<void> {
     if (!this.player) {
       await this.init();
     }
@@ -165,6 +165,11 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
 
     // If the track is already loaded/cued in player, use SDK resume() directly
     if (this.trackLoadedInPlayer && this.isPlayerReady) {
+      if (typeof positionMs === 'number' && positionMs >= 0) {
+        await this.player.seek(Math.round(positionMs)).catch(() => {});
+        this.positionMs = Math.round(positionMs);
+        this.lastPositionUpdateTime = Date.now();
+      }
       await this.player.resume();
       this.isPaused = false;
       this.emit('play');
@@ -182,15 +187,21 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
     }
 
     const token = await this.fetchPlaybackToken();
+    const body: Record<string, any> = {
+      uris: [this.currentSpotifyUri]
+    };
+    if (typeof positionMs === 'number' && positionMs > 0) {
+      body.position_ms = Math.round(positionMs);
+      this.positionMs = Math.round(positionMs);
+    }
+
     const playRes = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${this.deviceId}`, {
       method: 'PUT',
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        uris: [this.currentSpotifyUri]
-      })
+      body: JSON.stringify(body)
     });
 
     if (!playRes.ok) {
@@ -203,8 +214,21 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
 
     this.trackLoadedInPlayer = true;
     this.isPaused = false;
+    this.lastPositionUpdateTime = Date.now();
     this.emit('play');
     this.emit('playing');
+  }
+
+  getPlaybackState() {
+    return {
+      isReady: this.isPlayerReady,
+      deviceId: this.deviceId,
+      currentSpotifyUri: this.currentSpotifyUri,
+      currentTrackId: this.currentTrackId,
+      isPlaying: !this.isPaused,
+      positionMs: this.positionMs,
+      durationMs: this.durationMs
+    };
   }
 
   pause(): void {

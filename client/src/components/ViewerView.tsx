@@ -23,6 +23,7 @@ import { LocalPlaybackAdapter } from '../lib/playback/LocalPlaybackAdapter';
 import { getSocket } from '../lib/socket';
 import { useAuth } from '../hooks/useAuth';
 import { AccountBadge } from './AccountBadge';
+import { useSpotifyRoom } from '../hooks/useSpotifyRoom';
 
 interface Props {
   roomId: string;
@@ -40,9 +41,24 @@ function formatTime(secs: number): string {
 }
 
 export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
-  const { connected, roomState, roomError } = useRoom(roomId, 'viewer', displayName);
+  const { connected, roomState, roomError, emitSpotifyListenerStatus } = useRoom(roomId, 'viewer', displayName);
   const toast = useToast();
   const { user: authUser, isAuthenticated, login, register, logout } = useAuth();
+
+  const {
+    isSpotifyConnected,
+    adapter: spotifyAdapter,
+    inSync: isSpotifyInSync,
+    isPremium: isSpotifyPremium,
+    playbackBlocked: spotifyPlaybackBlocked,
+    statusMessage: spotifyStatusMessage,
+    syncAudio: syncSpotifyAudio,
+    connectSpotify,
+  } = useSpotifyRoom({
+    roomState,
+    role: 'viewer',
+    emitListenerStatus: emitSpotifyListenerStatus,
+  });
 
   const sortedMembers = [...(roomState.members || [])].sort((a, b) => {
     if (a.role === 'host' && b.role !== 'host') return -1;
@@ -70,6 +86,45 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
     roomState.currentTime,
     roomState.isPlaying,
   );
+
+  // Sync state and pause local audio when in Spotify mode
+  useEffect(() => {
+    if (roomState.source === 'spotify') {
+      if (adapter) adapter.pause();
+      const dur = roomState.duration || (roomState.spotifyTrack?.durationMs ? roomState.spotifyTrack.durationMs / 1000 : 0);
+      if (dur > 0) setDuration(dur);
+    }
+  }, [roomState.source, roomState.duration, roomState.spotifyTrack?.durationMs, adapter]);
+
+  // Position updates for Spotify mode
+  useEffect(() => {
+    if (roomState.source !== 'spotify') return;
+    const unsubTime = spotifyAdapter.on('timeupdate', () => {
+      setCurrentTime(spotifyAdapter.getCurrentTime());
+      if (spotifyAdapter.getDuration() > 0) {
+        setDuration(spotifyAdapter.getDuration());
+      }
+    });
+    const interval = setInterval(() => {
+      if (roomState.isPlaying) {
+        if (isSpotifyConnected && isSpotifyInSync) {
+          setCurrentTime(spotifyAdapter.getCurrentTime());
+        } else {
+          // If not connected to Spotify or non-premium, keep visual progress bar and lyrics moving in sync with room!
+          const now = Date.now();
+          const startTime = roomState.scheduledStartTime || roomState.spotifyState?.timestamp || now;
+          const elapsed = Math.max(0, (now - startTime) / 1000);
+          setCurrentTime(roomState.currentTime + elapsed);
+        }
+      } else {
+        setCurrentTime(roomState.currentTime);
+      }
+    }, 250);
+    return () => {
+      unsubTime();
+      clearInterval(interval);
+    };
+  }, [roomState.source, roomState.isPlaying, roomState.currentTime, roomState.scheduledStartTime, roomState.spotifyState?.timestamp, spotifyAdapter, isSpotifyConnected, isSpotifyInSync]);
 
   // Show room errors
   useEffect(() => {
@@ -353,7 +408,7 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
 
   return (
     <div className="relative min-h-screen bg-noir-black grain-overlay flex flex-col overflow-hidden">
-      <DynamicBackground coverFilename={roomState.coverFilename || null} songName={roomState.songName || null} />
+      <DynamicBackground coverFilename={roomState.coverUrl || roomState.coverFilename || null} songName={roomState.songName || null} />
       <GlowSpotlight />
       <ToastContainer toasts={toast.toasts} onDismiss={toast.dismiss} />
 
@@ -466,25 +521,54 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                     <span className="font-mono text-[10px] tracking-[0.25em] text-noir-ash uppercase">
                       Listeners ({sortedMembers.length})
                     </span>
+                    {roomState.source === 'spotify' && (
+                      <span className="text-[9px] font-mono text-[#1DB954] bg-[#1DB954]/10 px-1.5 py-0.5 rounded border border-[#1DB954]/30">
+                        SPOTIFY ROOM
+                      </span>
+                    )}
                   </div>
-                  <div className="max-h-32 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                    {sortedMembers.map((m) => (
-                      <div key={m.id} className="flex items-center justify-between text-xs font-mono">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="shrink-0" title={m.role === 'host' ? 'Host' : 'Viewer'}>
-                            {m.role === 'host' ? '👑' : '🎧'}
-                          </span>
-                          <span className="text-noir-white truncate" title={m.displayName}>
-                            {m.displayName}
-                          </span>
+                  <div className="max-h-36 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                    {sortedMembers.map((m) => {
+                      const spotifyStatus = roomState.spotifyListeners?.find(l => l.socketId === m.id || l.userId === m.id);
+                      return (
+                        <div key={m.id} className="flex items-center justify-between text-xs font-mono">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="shrink-0" title={m.role === 'host' ? 'Host' : 'Viewer'}>
+                              {m.role === 'host' ? '👑' : '🎧'}
+                            </span>
+                            <span className="text-noir-white truncate" title={m.displayName}>
+                              {m.displayName}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {roomState.source === 'spotify' && (
+                              spotifyStatus?.inSync ? (
+                                <span className="text-[8px] text-[#1DB954] bg-[#1DB954]/15 px-1 py-0.5 rounded border border-[#1DB954]/30" title="In Sync">
+                                  🟢 Sync
+                                </span>
+                              ) : spotifyStatus?.isReady ? (
+                                <span className="text-[8px] text-amber-400 bg-amber-400/15 px-1 py-0.5 rounded border border-amber-400/30" title="Ready">
+                                  🟡 Ready
+                                </span>
+                              ) : spotifyStatus?.isConnected === false ? (
+                                <span className="text-[8px] text-noir-dim bg-noir-graphite px-1 py-0.5 rounded border border-noir-border" title="Unlinked">
+                                  ⚪ Unlinked
+                                </span>
+                              ) : !spotifyStatus?.isPremium ? (
+                                <span className="text-[8px] text-red-400 bg-red-400/15 px-1 py-0.5 rounded border border-red-400/30" title="Non-Premium">
+                                  ⚠️ Non-Prem
+                                </span>
+                              ) : null
+                            )}
+                            {m.id === getSocket().id && (
+                              <span className="text-[9px] text-accent-gold bg-accent-gold/10 px-1 rounded border border-accent-gold/20">
+                                You
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        {m.id === getSocket().id && (
-                          <span className="text-[9px] text-accent-gold bg-accent-gold/10 px-1 rounded border border-accent-gold/20">
-                            You
-                          </span>
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </GlassPanel>
 
@@ -493,9 +577,9 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                   {roomState.songName && (
                     <div className="flex items-center gap-3.5">
                       <div className="w-14 h-14 rounded-xl bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 flex items-center justify-center shadow-sm">
-                        {roomState.coverFilename ? (
+                        {(roomState.coverUrl || roomState.coverFilename) ? (
                           <img
-                            src={`${SERVER_URL || ''}/api/library/covers/${roomState.coverFilename}`}
+                            src={roomState.coverUrl || `${SERVER_URL || ''}/api/library/covers/${roomState.coverFilename}`}
                             alt="Cover"
                             className="w-full h-full object-cover"
                             onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
@@ -505,7 +589,14 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                         )}
                       </div>
                       <div className="min-w-0 flex-1">
-                        <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase mb-1">Playing</p>
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase">Playing</p>
+                          {roomState.source === 'spotify' && (
+                            <span className="text-[9px] font-mono text-[#1DB954] bg-[#1DB954]/15 px-1 py-0.2 rounded border border-[#1DB954]/30">
+                              🟢 SPOTIFY
+                            </span>
+                          )}
+                        </div>
                         <p className="font-display text-lg text-noir-white leading-snug truncate">
                           {roomState.songName}
                         </p>
@@ -518,38 +609,104 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                     </div>
                   )}
 
+                  {/* Fallback card for Spotify mode when unlinked or non-premium */}
+                  {roomState.source === 'spotify' && !isSpotifyConnected && (
+                    <div className="p-3 bg-[#1DB954]/10 border border-[#1DB954]/30 rounded-xl space-y-2">
+                      <div className="flex items-center gap-1.5 text-[#1DB954] text-xs font-mono font-semibold">
+                        <span>🟢</span>
+                        <span>Spotify Premium Required</span>
+                      </div>
+                      <p className="text-[11px] font-body text-noir-ash leading-relaxed">
+                        This room is streaming via Spotify. Connect your Spotify account to listen along in sync.
+                      </p>
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={connectSpotify}
+                        className="w-full text-xs text-[#1DB954] border-[#1DB954]/40 hover:bg-[#1DB954]/20 flex items-center justify-center gap-1.5"
+                      >
+                        <span>🟢</span>
+                        <span>Connect Spotify</span>
+                      </Button>
+                    </div>
+                  )}
+
+                  {roomState.source === 'spotify' && isSpotifyConnected && !isSpotifyPremium && (
+                    <div className="p-3 bg-amber-950/40 border border-amber-500/30 rounded-xl space-y-1 text-xs">
+                      <div className="flex items-center gap-1.5 text-amber-400 font-mono font-semibold">
+                        <span>⚠️</span>
+                        <span>Spotify Premium Required</span>
+                      </div>
+                      <p className="text-[11px] font-body text-noir-ash">
+                        Web Playback SDK streaming requires Spotify Premium. Visual playback and lyrics remain active.
+                      </p>
+                    </div>
+                  )}
+
                   {/* State indicator */}
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      {roomState.isPlaying ? (
-                        <>
-                          <WaveformBar active={localPlaying} />
-                          <span className="font-mono text-xs text-green-400 tracking-widest">
-                            {localPlaying ? 'SYNCED' : 'BLOCKED'}
-                          </span>
-                        </>
+                      {roomState.source === 'spotify' ? (
+                        roomState.isPlaying ? (
+                          <>
+                            <WaveformBar active={isSpotifyInSync} />
+                            <span className={`font-mono text-xs tracking-widest ${isSpotifyInSync ? 'text-[#1DB954]' : 'text-amber-400'}`}>
+                              {isSpotifyInSync ? 'SPOTIFY SYNCED' : spotifyStatusMessage.toUpperCase()}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <WaveformBar active={false} />
+                            <span className="font-mono text-xs text-noir-dim tracking-widest">
+                              {connected ? 'WAITING FOR HOST' : 'CONNECTING…'}
+                            </span>
+                          </>
+                        )
                       ) : (
-                        <>
-                          <WaveformBar active={false} />
-                          <span className="font-mono text-xs text-noir-dim tracking-widest">
-                            {connected ? 'WAITING FOR HOST' : 'CONNECTING…'}
-                          </span>
-                        </>
+                        roomState.isPlaying ? (
+                          <>
+                            <WaveformBar active={localPlaying} />
+                            <span className="font-mono text-xs text-green-400 tracking-widest">
+                              {localPlaying ? 'SYNCED' : 'BLOCKED'}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <WaveformBar active={false} />
+                            <span className="font-mono text-xs text-noir-dim tracking-widest">
+                              {connected ? 'WAITING FOR HOST' : 'CONNECTING…'}
+                            </span>
+                          </>
+                        )
                       )}
-                      {buffering && roomState.isPlaying && (
+                      {buffering && roomState.isPlaying && roomState.source !== 'spotify' && (
                         <Spinner size="sm" />
                       )}
                     </div>
 
-                    {roomState.isPlaying && !localPlaying && (
-                      <Button
-                        variant="gold"
-                        size="sm"
-                        onClick={handleSyncAudio}
-                        className="animate-pulse py-1 px-2.5 text-[10px]"
-                      >
-                        🔊 Sync Audio
-                      </Button>
+                    {/* Sync audio buttons */}
+                    {roomState.source === 'spotify' ? (
+                      roomState.isPlaying && isSpotifyConnected && isSpotifyPremium && spotifyPlaybackBlocked && (
+                        <Button
+                          variant="gold"
+                          size="sm"
+                          onClick={syncSpotifyAudio}
+                          className="animate-pulse py-1 px-2.5 text-[10px]"
+                        >
+                          🔊 Sync Spotify Audio
+                        </Button>
+                      )
+                    ) : (
+                      roomState.isPlaying && !localPlaying && (
+                        <Button
+                          variant="gold"
+                          size="sm"
+                          onClick={handleSyncAudio}
+                          className="animate-pulse py-1 px-2.5 text-[10px]"
+                        >
+                          🔊 Sync Audio
+                        </Button>
+                      )
                     )}
                   </div>
 
@@ -745,10 +902,10 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
               {/* Song header */}
               {roomState.songName && (
                 <div className="px-8 pt-8 pb-2 shrink-0 flex items-center gap-4">
-                  {roomState.coverFilename && (
+                  {(roomState.coverUrl || roomState.coverFilename) && (
                     <div className="w-16 h-16 rounded-xl bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 shadow-md">
                       <img
-                        src={`${SERVER_URL || ''}/api/library/covers/${roomState.coverFilename}`}
+                        src={roomState.coverUrl || `${SERVER_URL || ''}/api/library/covers/${roomState.coverFilename}`}
                         alt="Cover"
                         className="w-full h-full object-cover"
                         onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
@@ -756,7 +913,14 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                     </div>
                   )}
                   <div className="min-w-0">
-                    <h1 className="font-display text-3xl text-noir-white truncate">{roomState.lrcMeta?.title || roomState.songName}</h1>
+                    <div className="flex items-center gap-2">
+                      <h1 className="font-display text-3xl text-noir-white truncate">{roomState.lrcMeta?.title || roomState.songName}</h1>
+                      {roomState.source === 'spotify' && (
+                        <span className="text-[10px] font-mono text-[#1DB954] bg-[#1DB954]/15 px-2 py-0.5 rounded border border-[#1DB954]/30 uppercase">
+                          🟢 Spotify Live
+                        </span>
+                      )}
+                    </div>
                     {roomState.lrcMeta?.artist && (
                       <p className="font-body text-noir-ash mt-1 truncate">{roomState.lrcMeta.artist}</p>
                     )}
@@ -828,25 +992,54 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                 <span className="font-mono text-[10px] tracking-[0.25em] text-noir-ash uppercase">
                   Listeners ({sortedMembers.length})
                 </span>
+                {roomState.source === 'spotify' && (
+                  <span className="text-[9px] font-mono text-[#1DB954] bg-[#1DB954]/10 px-1.5 py-0.5 rounded border border-[#1DB954]/30">
+                    SPOTIFY ROOM
+                  </span>
+                )}
               </div>
-              <div className="max-h-32 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                {sortedMembers.map((m) => (
-                  <div key={m.id} className="flex items-center justify-between text-xs font-mono">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="shrink-0" title={m.role === 'host' ? 'Host' : 'Viewer'}>
-                        {m.role === 'host' ? '👑' : '🎧'}
-                      </span>
-                      <span className="text-noir-white truncate" title={m.displayName}>
-                        {m.displayName}
-                      </span>
+              <div className="max-h-36 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                {sortedMembers.map((m) => {
+                  const spotifyStatus = roomState.spotifyListeners?.find(l => l.socketId === m.id || l.userId === m.id);
+                  return (
+                    <div key={m.id} className="flex items-center justify-between text-xs font-mono">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="shrink-0" title={m.role === 'host' ? 'Host' : 'Viewer'}>
+                          {m.role === 'host' ? '👑' : '🎧'}
+                        </span>
+                        <span className="text-noir-white truncate" title={m.displayName}>
+                          {m.displayName}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {roomState.source === 'spotify' && (
+                          spotifyStatus?.inSync ? (
+                            <span className="text-[8px] text-[#1DB954] bg-[#1DB954]/15 px-1 py-0.5 rounded border border-[#1DB954]/30" title="In Sync">
+                              🟢 Sync
+                            </span>
+                          ) : spotifyStatus?.isReady ? (
+                            <span className="text-[8px] text-amber-400 bg-amber-400/15 px-1 py-0.5 rounded border border-amber-400/30" title="Ready">
+                              🟡 Ready
+                            </span>
+                          ) : spotifyStatus?.isConnected === false ? (
+                            <span className="text-[8px] text-noir-dim bg-noir-graphite px-1 py-0.5 rounded border border-noir-border" title="Unlinked">
+                              ⚪ Unlinked
+                            </span>
+                          ) : !spotifyStatus?.isPremium ? (
+                            <span className="text-[8px] text-red-400 bg-red-400/15 px-1 py-0.5 rounded border border-red-400/30" title="Non-Premium">
+                              ⚠️ Non-Prem
+                            </span>
+                          ) : null
+                        )}
+                        {m.id === getSocket().id && (
+                          <span className="text-[9px] text-accent-gold bg-accent-gold/10 px-1 rounded border border-accent-gold/20">
+                            You
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    {m.id === getSocket().id && (
-                      <span className="text-[9px] text-accent-gold bg-accent-gold/10 px-1 rounded border border-accent-gold/20">
-                        You
-                      </span>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </GlassPanel>
 
@@ -854,9 +1047,9 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
             <GlassPanel className="p-4 space-y-4">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 rounded-lg bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 flex items-center justify-center shadow-sm">
-                  {roomState.coverFilename ? (
+                  {(roomState.coverUrl || roomState.coverFilename) ? (
                     <img
-                      src={`${SERVER_URL || ''}/api/library/covers/${roomState.coverFilename}`}
+                      src={roomState.coverUrl || `${SERVER_URL || ''}/api/library/covers/${roomState.coverFilename}`}
                       alt="Cover"
                       className="w-full h-full object-cover"
                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
@@ -866,7 +1059,14 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase mb-1">Playing</p>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase">Playing</p>
+                    {roomState.source === 'spotify' && (
+                      <span className="text-[9px] font-mono text-[#1DB954] bg-[#1DB954]/15 px-1 py-0.2 rounded border border-[#1DB954]/30">
+                        🟢 SPOTIFY
+                      </span>
+                    )}
+                  </div>
                   <p className="font-display text-base text-noir-white leading-snug truncate">
                     {roomState.songName || 'No Song Loaded'}
                   </p>
@@ -876,38 +1076,91 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                 </div>
               </div>
 
+              {/* Mobile fallback card for Spotify mode when unlinked or non-premium */}
+              {roomState.source === 'spotify' && !isSpotifyConnected && (
+                <div className="p-3 bg-[#1DB954]/10 border border-[#1DB954]/30 rounded-xl space-y-2">
+                  <div className="flex items-center gap-1.5 text-[#1DB954] text-xs font-mono font-semibold">
+                    <span>🟢</span>
+                    <span>Spotify Premium Required</span>
+                  </div>
+                  <p className="text-[11px] font-body text-noir-ash leading-relaxed">
+                    This room is streaming via Spotify. Connect your Spotify account to listen along in sync.
+                  </p>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={connectSpotify}
+                    className="w-full text-xs text-[#1DB954] border-[#1DB954]/40 hover:bg-[#1DB954]/20 flex items-center justify-center gap-1.5"
+                  >
+                    <span>🟢</span>
+                    <span>Connect Spotify</span>
+                  </Button>
+                </div>
+              )}
+
               {/* State indicator */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  {roomState.isPlaying ? (
-                    <>
-                      <WaveformBar active={localPlaying} />
-                      <span className="font-mono text-xs text-green-400 tracking-widest">
-                        {localPlaying ? 'SYNCED' : 'BLOCKED'}
-                      </span>
-                    </>
+                  {roomState.source === 'spotify' ? (
+                    roomState.isPlaying ? (
+                      <>
+                        <WaveformBar active={isSpotifyInSync} />
+                        <span className={`font-mono text-xs tracking-widest ${isSpotifyInSync ? 'text-[#1DB954]' : 'text-amber-400'}`}>
+                          {isSpotifyInSync ? 'SPOTIFY SYNCED' : spotifyStatusMessage.toUpperCase()}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <WaveformBar active={false} />
+                        <span className="font-mono text-xs text-noir-dim tracking-widest">
+                          {connected ? 'WAITING FOR HOST' : 'CONNECTING…'}
+                        </span>
+                      </>
+                    )
                   ) : (
-                    <>
-                      <WaveformBar active={false} />
-                      <span className="font-mono text-xs text-noir-dim tracking-widest">
-                        {connected ? 'WAITING FOR HOST' : 'CONNECTING…'}
-                      </span>
-                    </>
+                    roomState.isPlaying ? (
+                      <>
+                        <WaveformBar active={localPlaying} />
+                        <span className="font-mono text-xs text-green-400 tracking-widest">
+                          {localPlaying ? 'SYNCED' : 'BLOCKED'}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <WaveformBar active={false} />
+                        <span className="font-mono text-xs text-noir-dim tracking-widest">
+                          {connected ? 'WAITING FOR HOST' : 'CONNECTING…'}
+                        </span>
+                      </>
+                    )
                   )}
-                  {buffering && roomState.isPlaying && (
+                  {buffering && roomState.isPlaying && roomState.source !== 'spotify' && (
                     <Spinner size="sm" />
                   )}
                 </div>
 
-                {roomState.isPlaying && !localPlaying && (
-                  <Button
-                    variant="gold"
-                    size="sm"
-                    onClick={handleSyncAudio}
-                    className="animate-pulse py-1 px-2.5 text-[10px]"
-                  >
-                    🔊 Sync Audio
-                  </Button>
+                {roomState.source === 'spotify' ? (
+                  roomState.isPlaying && isSpotifyConnected && isSpotifyPremium && spotifyPlaybackBlocked && (
+                    <Button
+                      variant="gold"
+                      size="sm"
+                      onClick={syncSpotifyAudio}
+                      className="animate-pulse py-1 px-2.5 text-[10px]"
+                    >
+                      🔊 Sync Spotify Audio
+                    </Button>
+                  )
+                ) : (
+                  roomState.isPlaying && !localPlaying && (
+                    <Button
+                      variant="gold"
+                      size="sm"
+                      onClick={handleSyncAudio}
+                      className="animate-pulse py-1 px-2.5 text-[10px]"
+                    >
+                      🔊 Sync Audio
+                    </Button>
+                  )
                 )}
               </div>
 

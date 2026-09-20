@@ -38,7 +38,7 @@ export function DynamicBackground({ coverFilename, songName }: DynamicBackground
       {hasValidCover && (
         <div key={coverFilename} className="absolute inset-0 transition-opacity duration-1000 ease-in-out">
           <img
-            src={`${SERVER_URL || ''}/api/library/covers/${coverFilename}`}
+            src={coverFilename?.startsWith('http') || coverFilename?.startsWith('data:') ? coverFilename : `${SERVER_URL || ''}/api/library/covers/${coverFilename}`}
             onLoad={() => setImageLoaded(true)}
             onError={() => setImageError(true)}
             className={`absolute inset-0 w-full h-full object-cover scale-110 blur-2xl md:blur-3xl saturate-[130%] transition-opacity duration-1000 ${

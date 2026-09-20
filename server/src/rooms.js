@@ -23,6 +23,7 @@ class Room {
     this.userIds  = new Set(); // Set<userId: string> - active room members
     this.chunks   = new Map(); // Map<chunkIndex: number, ChunkEntry>
     this.members  = new Map(); // Map<socketId: string, MemberInfo>
+    this.spotifyListeners = new Map(); // Map<socketId: string, SpotifyListenerInfo>
     this.maxBufferedBytes = parseInt(process.env.MAX_ROOM_BUFFERED_MB || '100', 10) * 1024 * 1024; // 100MB default
     this.state    = {
       isPlaying: false,
@@ -34,10 +35,16 @@ class Room {
       songName: '',
       libraryTrackId: null, // Track ID if playing from catalog
       coverFilename: null,
+      coverUrl: null,       // Direct image URL for Spotify or external providers
+      duration: 0,
+      durationMs: 0,
       lyrics: [],
       lrcMeta: {},
       queue: [],
       currentQueueIndex: -1,
+      source: 'local',      // 'local' | 'spotify'
+      spotifyTrack: null,
+      spotifyState: null,
     };
     this.libraryFileBuffer = null;
     this.bytesPerChunk     = null;
@@ -74,10 +81,16 @@ class Room {
   setLibraryTrack(track, fileBuffer) {
     this.libraryFileBuffer = fileBuffer;
     this.telegramFileIds = null;
+    this.state.source = 'local';
+    this.state.spotifyTrack = null;
+    this.state.spotifyState = null;
+    this.state.coverUrl = null;
     this.state.libraryTrackId = track.id;
     this.state.mimeType = track.mimeType;
     this.state.songName = track.title;
     this.state.coverFilename = track.coverFilename || null;
+    this.state.duration = track.duration || 0;
+    this.state.durationMs = (track.duration || 0) * 1000;
     
     // Calculate total chunks (5s per chunk)
     const CHUNK_DURATION = 5;
@@ -101,11 +114,17 @@ class Room {
     this.libraryFileBuffer = null;
     this.bytesPerChunk = null;
     this.telegramFileIds = track.fileIds;
+    this.state.source = 'local';
+    this.state.spotifyTrack = null;
+    this.state.spotifyState = null;
+    this.state.coverUrl = null;
     this.state.libraryTrackId = track.id;
     this.state.mimeType = track.mimeType;
     this.state.songName = track.title;
     this.state.coverFilename = track.coverFilename || null;
     this.state.totalChunks = track.fileIds.length;
+    this.state.duration = track.duration || 0;
+    this.state.durationMs = (track.duration || 0) * 1000;
     
     this.touch();
     logger.info('Room loaded Telegram track from library', {
@@ -114,6 +133,73 @@ class Room {
       title: track.title,
       totalChunks: track.fileIds.length
     });
+  }
+
+  setSpotifyTrack(track) {
+    this.libraryFileBuffer = null;
+    this.telegramFileIds = null;
+    this.bytesPerChunk = null;
+    this.chunks.clear();
+
+    const durationSecs = Number(track.duration) || (track.durationMs ? Math.round(track.durationMs / 1000) : 0);
+    const durationMs = Number(track.durationMs) || (durationSecs * 1000);
+
+    this.state.source = 'spotify';
+    this.state.songName = track.title || '';
+    this.state.libraryTrackId = null;
+    this.state.coverFilename = null;
+    this.state.coverUrl = track.coverUrl || null;
+    this.state.totalChunks = null;
+    this.state.duration = durationSecs;
+    this.state.durationMs = durationMs;
+    this.state.isPlaying = false;
+    this.state.currentTime = 0;
+    this.state.chunkIndex = 0;
+    this.state.scheduledStartTime = null;
+    this.state.spotifyTrack = {
+      id: track.id,
+      uri: track.uri || `spotify:track:${track.id}`,
+      title: track.title,
+      artist: track.artist || '',
+      album: track.album || '',
+      coverUrl: track.coverUrl || null,
+      duration: durationSecs,
+      durationMs: durationMs,
+    };
+    this.state.spotifyState = {
+      isPlaying: false,
+      positionMs: 0,
+      timestamp: Date.now()
+    };
+    this.state.lrcMeta = {
+      title: track.title,
+      artist: track.artist || '',
+      album: track.album || ''
+    };
+    this.state.lyrics = track.lyrics || [];
+    this.touch();
+    logger.info('Room loaded Spotify track', {
+      roomId: this.roomId,
+      trackId: track.id,
+      title: track.title,
+      artist: track.artist
+    });
+  }
+
+  updateSpotifyListener(socketId, info) {
+    const member = this.members.get(socketId);
+    this.spotifyListeners.set(socketId, {
+      socketId,
+      userId: member?.userId || info.userId || null,
+      displayName: member?.displayName || info.displayName || 'Listener',
+      isConnected: Boolean(info.isConnected),
+      isPremium: Boolean(info.isPremium),
+      isReady: Boolean(info.isReady),
+      inSync: Boolean(info.inSync),
+      status: info.status || (info.inSync ? 'in_sync' : info.isReady ? 'ready' : 'not_connected'),
+      updatedAt: Date.now()
+    });
+    this.touch();
   }
 
   async getTelegramChunk(index) {
@@ -237,6 +323,7 @@ class Room {
   removeMember(socketId) {
     const member = this.members.get(socketId);
     this.members.delete(socketId);
+    this.spotifyListeners.delete(socketId);
 
     if (member && member.userId) {
       // Only remove userId if no other sockets remain for this user
@@ -289,6 +376,7 @@ class Room {
       availableChunks: this.getAvailableChunkIndices(),
       memberCount: this.getMemberCount(),
       members: this.getMembersArray(),
+      spotifyListeners: Array.from(this.spotifyListeners.values()),
     };
   }
 
@@ -297,6 +385,7 @@ class Room {
   destroy() {
     this.chunks.clear();
     this.members.clear();
+    this.spotifyListeners.clear();
     this.userIds.clear();
     this.libraryFileBuffer = null;
     this.telegramFileIds = null;

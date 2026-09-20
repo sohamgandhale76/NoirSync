@@ -21,6 +21,7 @@ import { getSocket } from '../lib/socket';
 import { LocalPlaybackAdapter } from '../lib/playback/LocalPlaybackAdapter';
 import { useAuth } from '../hooks/useAuth';
 import { AccountBadge } from './AccountBadge';
+import { useSpotifyRoom } from '../hooks/useSpotifyRoom';
 
 interface Props {
   roomId: string;
@@ -45,11 +46,26 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     emitSeek,
     emitChunkPlaying,
     emitLoadLibraryTrack,
+    emitLoadSpotifyTrack,
+    emitSpotifyListenerStatus,
     emitUpdateQueue,
     emitUpdateTrackMetadata,
   } = useRoom(roomId, 'host', displayName);
   const toast = useToast();
   const { user: authUser, isAuthenticated, login, register, logout } = useAuth();
+
+  const {
+    isSpotifyConnected,
+    adapter: spotifyAdapter,
+    isPremium: isSpotifyPremium,
+    playbackBlocked: spotifyPlaybackBlocked,
+    syncAudio: syncSpotifyAudio,
+    connectSpotify,
+  } = useSpotifyRoom({
+    roomState,
+    role: 'host',
+    emitListenerStatus: emitSpotifyListenerStatus,
+  });
 
   const sortedMembers = [...(roomState.members || [])].sort((a, b) => {
     if (a.role === 'host' && b.role !== 'host') return -1;
@@ -96,6 +112,55 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     roomState.currentTime,
     roomState.isPlaying,
   );
+
+  // Synchronize state when room is in Spotify mode
+  useEffect(() => {
+    if (roomState.source === 'spotify') {
+      setLyrics(roomState.lyrics || []);
+      setLrcMeta(roomState.lrcMeta || {});
+      setSongName(roomState.songName || '');
+      const dur = roomState.duration || (roomState.spotifyTrack?.durationMs ? roomState.spotifyTrack.durationMs / 1000 : 0);
+      if (dur > 0) setDuration(dur);
+      setAudioReady(true);
+      setIsPlaying(roomState.isPlaying);
+    }
+  }, [roomState.source, roomState.lyrics, roomState.lrcMeta, roomState.songName, roomState.duration, roomState.spotifyTrack?.durationMs, roomState.isPlaying]);
+
+  // Track position in Spotify mode
+  useEffect(() => {
+    if (roomState.source !== 'spotify') return;
+    const unsubTime = spotifyAdapter.on('timeupdate', () => {
+      setCurrentTime(spotifyAdapter.getCurrentTime());
+      if (spotifyAdapter.getDuration() > 0) {
+        setDuration(spotifyAdapter.getDuration());
+      }
+    });
+
+    const handleSpotifyEnded = () => {
+      setIsPlaying(false);
+      if (isRepeatRef.current === 'one') {
+        spotifyAdapter.seekTo(0);
+        spotifyAdapter.play(0).then(() => {
+          setIsPlaying(true);
+          emitPlayRef.current(0, 0);
+        }).catch(() => {});
+      } else {
+        playNextRef.current();
+      }
+    };
+    const unsubEnded = spotifyAdapter.on('ended', handleSpotifyEnded);
+
+    const interval = setInterval(() => {
+      if (roomState.isPlaying) {
+        setCurrentTime(spotifyAdapter.getCurrentTime());
+      }
+    }, 250);
+    return () => {
+      unsubTime();
+      unsubEnded();
+      clearInterval(interval);
+    };
+  }, [roomState.source, roomState.isPlaying, spotifyAdapter]);
 
   // Show room errors as toasts
   useEffect(() => {
@@ -323,8 +388,54 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
 
   const playTrack = useCallback(async (track: any) => {
     if (!adapter) return;
-    if (track.provider === 'spotify' || track.isPlayable === false) {
-      toast.error('Spotify tracks are metadata-only and cannot be played in room audio.');
+
+    // Check if this is a Spotify track
+    const isSpotify = track.provider === 'spotify' ||
+      track.source === 'spotify' ||
+      track.capabilities?.playback === 'spotify_connect' ||
+      Boolean(track.provider_track_id && track.provider === 'spotify') ||
+      (typeof track.id === 'string' && track.id.startsWith('spotify:track:'));
+
+    if (isSpotify) {
+      if (adapter) adapter.pause();
+      const spotifyUri = track.uri || (track.provider_track_id
+        ? `spotify:track:${track.provider_track_id}`
+        : (track.providerTrackId
+          ? `spotify:track:${track.providerTrackId}`
+          : (typeof track.id === 'string' && track.id.startsWith('spotify:track:') ? track.id : `spotify:track:${track.id}`)));
+      
+      const spotifyPayload = {
+        id: track.provider_track_id || track.providerTrackId || track.id,
+        uri: spotifyUri,
+        title: track.title,
+        artist: track.artist || '',
+        album: track.album || '',
+        coverUrl: track.coverUrl || track.cover_key || null,
+        duration: track.duration || 0,
+        durationMs: (track.duration || 0) * 1000,
+        provider: 'spotify',
+      };
+
+      emitLoadSpotifyTrack(spotifyPayload);
+      setSongName(track.title);
+      setDuration(track.duration || 0);
+      setAudioReady(true);
+      setActiveTrack(spotifyPayload);
+      toast.success(`Playing "${track.title}" via Spotify...`);
+
+      spotifyAdapter.setSrc(spotifyUri);
+      spotifyAdapter.play(0).then(() => {
+        setIsPlaying(true);
+        emitPlay(0, 0);
+      }).catch((err: any) => {
+        console.warn('Host Spotify play failed:', err);
+        toast.error(err.message || 'Spotify playback failed');
+      });
+      return;
+    }
+
+    if (track.isPlayable === false) {
+      toast.error('This track is not playable in room audio.');
       return;
     }
     
@@ -403,7 +514,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     emitPlay(0, 0);
 
     toast.success(`Playing "${track.title}" from library...`);
-  }, [emitLoadLibraryTrack, emitPlay, emitUpdateTrackMetadata, toast]);
+  }, [emitLoadLibraryTrack, emitPlay, emitUpdateTrackMetadata, emitLoadSpotifyTrack, spotifyAdapter, adapter, toast]);
 
   const playNext = useCallback(() => {
     if (queue.length === 0) return;
@@ -476,8 +587,8 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   }, [playTrack, toast]);
 
   const handleAddToQueue = useCallback((track: any) => {
-    if (track.provider === 'spotify' || track.isPlayable === false) {
-      toast.error('Spotify tracks are metadata-only and cannot be added to the queue.');
+    if (track.isPlayable === false && track.provider !== 'spotify') {
+      toast.error('This track cannot be added to the queue.');
       return;
     }
     setQueue(prev => {
@@ -492,7 +603,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   }, [toast]);
 
   const handleAddTracksToQueue = useCallback((newTracks: any[]) => {
-    const playable = newTracks.filter((t) => t.provider !== 'spotify' && t.isPlayable !== false);
+    const playable = newTracks.filter((t) => t.provider === 'spotify' || t.isPlayable !== false);
     if (playable.length === 0) return;
     setQueue(prev => {
       const filtered = playable.filter(nt => !prev.some(pt => pt.id === nt.id));
@@ -529,11 +640,17 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
 
   // ── Playlist Handlers: Play, Queue, and Load Playlist to Room Queue ─────────
   const handlePlaylistPlayTrack = useCallback((track: any) => {
-    if (track.provider === 'spotify' || track.isPlayable === false) {
-      toast.error('Spotify tracks are metadata-only and cannot be played in room audio.');
+    setShowR2Library(false);
+    if (track.provider === 'spotify') {
+      playTrack(track);
+      setActiveTab('player');
+      setMobileTab('player');
       return;
     }
-    setShowR2Library(false);
+    if (track.isPlayable === false) {
+      toast.error('This track is not playable in room audio.');
+      return;
+    }
     const format = (track.format || 'mp3').toLowerCase();
     const mimeType = format === 'flac' ? 'audio/flac' :
                      format === 'wav'  ? 'audio/wav'  :
@@ -552,8 +669,12 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   }, [playTrack, toast]);
 
   const handlePlaylistAddToQueue = useCallback((track: any) => {
-    if (track.provider === 'spotify' || track.isPlayable === false) {
-      toast.error('Spotify tracks are metadata-only and cannot be added to the room queue.');
+    if (track.provider === 'spotify') {
+      handleAddToQueue(track);
+      return;
+    }
+    if (track.isPlayable === false) {
+      toast.error('This track cannot be added to the room queue.');
       return;
     }
     const format = (track.format || 'mp3').toLowerCase();
@@ -575,16 +696,16 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   const handlePlaylistLoadToQueue = useCallback((tracksToLoad: any[]) => {
     if (!tracksToLoad || tracksToLoad.length === 0) return;
     const playable = tracksToLoad.filter(
-      (track) => track.provider !== 'spotify' && track.isPlayable !== false
+      (track) => track.provider === 'spotify' || track.isPlayable !== false
     );
     if (playable.length === 0) {
-      toast.error('No playable audio tracks in playlist (Spotify tracks are metadata-only).');
+      toast.error('No playable audio tracks in playlist.');
       return;
     }
-    if (playable.length < tracksToLoad.length) {
-      toast.info(`Loaded ${playable.length} playable track(s) to queue (Spotify tracks skipped).`);
-    }
     const normalizedTracks = playable.map((track) => {
+      if (track.provider === 'spotify') {
+        return track;
+      }
       const format = (track.format || 'mp3').toLowerCase();
       const mimeType = format === 'flac' ? 'audio/flac' :
                        format === 'wav'  ? 'audio/wav'  :
@@ -633,14 +754,20 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     if (adapter) {
       adapter.setVolume(val);
     }
-  }, []);
+    if (spotifyAdapter) {
+      spotifyAdapter.setVolume(val);
+    }
+  }, [adapter, spotifyAdapter]);
 
   // Sync volume on audio source changes
   useEffect(() => {
     if (adapter) {
       adapter.setVolume(volume);
     }
-  }, [volume, audioReady]);
+    if (spotifyAdapter) {
+      spotifyAdapter.setVolume(volume);
+    }
+  }, [volume, audioReady, adapter, spotifyAdapter]);
 
 
   const processFiles = useCallback(async (files: File[]) => {
@@ -680,36 +807,118 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   // ── Playback controls ───────────────────────────────────────────────────
 
   const handlePlay = useCallback(() => {
+    if (roomState.source === 'spotify') {
+      if (adapter) adapter.pause();
+      if (!isSpotifyConnected) {
+        toast.error('Connect your Spotify account to play');
+        return;
+      }
+      spotifyAdapter.play(currentTime * 1000).then(() => {
+        setIsPlaying(true);
+        emitPlay(currentTime, 0);
+      }).catch((err: any) => {
+        toast.error(err.message || 'Spotify play failed');
+      });
+      return;
+    }
     const audio = adapter;
     if (!audio || !audioReady) return;
     setIsPlaying(true);
     emitPlay(audio.getCurrentTime(), timeToChunkIndex(audio.getCurrentTime()));
-  }, [audioReady, emitPlay, adapter]);
+  }, [audioReady, emitPlay, adapter, roomState.source, isSpotifyConnected, spotifyAdapter, currentTime, toast]);
 
   const handlePause = useCallback(() => {
+    if (roomState.source === 'spotify') {
+      spotifyAdapter.pause();
+      setIsPlaying(false);
+      emitPause(currentTime);
+      return;
+    }
     const audio = adapter;
     if (!audio) return;
     audio.pause();
     setIsPlaying(false);
     emitPause(audio.getCurrentTime());
-  }, [emitPause]);
+  }, [emitPause, adapter, roomState.source, spotifyAdapter, currentTime]);
 
   const handleSeek = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const t = parseFloat(e.target.value);
+    if (roomState.source === 'spotify') {
+      spotifyAdapter.seekTo(t);
+      setCurrentTime(t);
+      emitSeek(t, 0);
+      return;
+    }
     const audio = adapter;
     if (!audio) return;
-    const t = parseFloat(e.target.value);
     audio.seekTo(t);
     setCurrentTime(t);
     emitSeek(t, timeToChunkIndex(t));
-  }, [emitSeek]);
+  }, [emitSeek, adapter, roomState.source, spotifyAdapter]);
 
   const handleLyricsLineClick = useCallback((time: number) => {
+    if (roomState.source === 'spotify') {
+      spotifyAdapter.seekTo(time);
+      setCurrentTime(time);
+      emitSeek(time, 0);
+      return;
+    }
     const audio = adapter;
     if (!audio) return;
     audio.seekTo(time);
     setCurrentTime(time);
     emitSeek(time, timeToChunkIndex(time));
-  }, [emitSeek]);
+  }, [emitSeek, adapter, roomState.source, spotifyAdapter]);
+
+  const handleUniversalPlayTrack = useCallback((track: any) => {
+    if (track.capabilities?.playback === 'noirsync_stream' && track.id) {
+      const url = `${SERVER_URL || ''}/api/catalog/tracks/${track.id}/stream`;
+      if (spotifyAdapter) spotifyAdapter.pause();
+      if (adapter) {
+        adapter.setSrc(url);
+        setAudioReady(true);
+        setSongName(track.title);
+        setDuration(track.duration || 0);
+        setIsPlaying(true);
+        emitPlay(0, 0);
+        setActiveTab('player');
+        setMobileTab('player');
+      }
+    } else if (track.provider === 'spotify' || track.capabilities?.playback === 'spotify_connect') {
+      if (adapter) adapter.pause();
+      const spotifyUri = track.providerTrackId
+        ? `spotify:track:${track.providerTrackId}`
+        : (track.id?.startsWith('spotify:track:') ? track.id : `spotify:track:${track.id}`);
+      const spotifyPayload = {
+        id: track.providerTrackId || track.id,
+        uri: spotifyUri,
+        title: track.title,
+        artist: track.artist || '',
+        album: track.album || '',
+        coverUrl: track.coverUrl || null,
+        duration: track.duration || 0,
+        durationMs: (track.duration || 0) * 1000,
+      };
+      emitLoadSpotifyTrack(spotifyPayload);
+      setSongName(track.title);
+      setDuration(track.duration || 0);
+      setAudioReady(true);
+      setActiveTrack(spotifyPayload);
+      setActiveTab('player');
+      setMobileTab('player');
+      toast.success(`Loaded Spotify track: ${track.title}`);
+
+      // Start playing via host's Spotify SDK
+      spotifyAdapter.setSrc(spotifyUri);
+      spotifyAdapter.play(0).then(() => {
+        setIsPlaying(true);
+        emitPlay(0, 0);
+      }).catch((err: any) => {
+        console.warn('Host initial Spotify play failed:', err);
+        toast.error(err.message || 'Spotify playback failed');
+      });
+    }
+  }, [adapter, spotifyAdapter, emitPlay, emitLoadSpotifyTrack, toast]);
 
   const shareLink = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
 
@@ -719,7 +928,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
 
   return (
     <div className="relative min-h-screen bg-noir-black grain-overlay flex flex-col overflow-hidden">
-      <DynamicBackground coverFilename={activeTrack?.coverFilename || roomState.coverFilename || null} songName={roomState.songName || songName || null} />
+      <DynamicBackground coverFilename={roomState.coverUrl || activeTrack?.coverUrl || activeTrack?.coverFilename || roomState.coverFilename || null} songName={roomState.songName || songName || null} />
       <GlowSpotlight />
       <ToastContainer toasts={toast.toasts} onDismiss={toast.dismiss} />
 
@@ -832,25 +1041,54 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                     <span className="font-mono text-[10px] tracking-[0.25em] text-noir-ash uppercase">
                       Listeners ({sortedMembers.length})
                     </span>
+                    {roomState.source === 'spotify' && (
+                      <span className="text-[9px] font-mono text-[#1DB954] bg-[#1DB954]/10 px-1.5 py-0.5 rounded border border-[#1DB954]/30">
+                        SPOTIFY ROOM
+                      </span>
+                    )}
                   </div>
-                  <div className="max-h-32 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                    {sortedMembers.map((m) => (
-                      <div key={m.id} className="flex items-center justify-between text-xs font-mono">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="shrink-0" title={m.role === 'host' ? 'Host' : 'Viewer'}>
-                            {m.role === 'host' ? '👑' : '🎧'}
-                          </span>
-                          <span className="text-noir-white truncate" title={m.displayName}>
-                            {m.displayName}
-                          </span>
+                  <div className="max-h-36 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                    {sortedMembers.map((m) => {
+                      const spotifyStatus = roomState.spotifyListeners?.find(l => l.socketId === m.id || l.userId === m.id);
+                      return (
+                        <div key={m.id} className="flex items-center justify-between text-xs font-mono">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="shrink-0" title={m.role === 'host' ? 'Host' : 'Viewer'}>
+                              {m.role === 'host' ? '👑' : '🎧'}
+                            </span>
+                            <span className="text-noir-white truncate" title={m.displayName}>
+                              {m.displayName}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {roomState.source === 'spotify' && (
+                              spotifyStatus?.inSync ? (
+                                <span className="text-[8px] text-[#1DB954] bg-[#1DB954]/15 px-1 py-0.5 rounded border border-[#1DB954]/30" title="In Sync">
+                                  🟢 Sync
+                                </span>
+                              ) : spotifyStatus?.isReady ? (
+                                <span className="text-[8px] text-amber-400 bg-amber-400/15 px-1 py-0.5 rounded border border-amber-400/30" title="Ready">
+                                  🟡 Ready
+                                </span>
+                              ) : spotifyStatus?.isConnected === false ? (
+                                <span className="text-[8px] text-noir-dim bg-noir-graphite px-1 py-0.5 rounded border border-noir-border" title="Unlinked">
+                                  ⚪ Unlinked
+                                </span>
+                              ) : !spotifyStatus?.isPremium ? (
+                                <span className="text-[8px] text-red-400 bg-red-400/15 px-1 py-0.5 rounded border border-red-400/30" title="Non-Premium">
+                                  ⚠️ Non-Prem
+                                </span>
+                              ) : null
+                            )}
+                            {m.id === getSocket().id && (
+                              <span className="text-[9px] text-accent-gold bg-accent-gold/10 px-1 rounded border border-accent-gold/20">
+                                You
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        {m.id === getSocket().id && (
-                          <span className="text-[9px] text-accent-gold bg-accent-gold/10 px-1 rounded border border-accent-gold/20">
-                            You
-                          </span>
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </GlassPanel>
 
@@ -992,9 +1230,9 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
               <GlassPanel className="p-4 space-y-4" glow={audioReady}>
                 <div className="flex items-center gap-3.5">
                   <div className="w-14 h-14 rounded-xl bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 flex items-center justify-center shadow-sm">
-                    {(activeTrack?.coverFilename || roomState.coverFilename) ? (
+                    {(roomState.coverUrl || activeTrack?.coverUrl || activeTrack?.coverFilename || roomState.coverFilename) ? (
                       <img
-                        src={`${SERVER_URL || ''}/api/library/covers/${activeTrack?.coverFilename || roomState.coverFilename}`}
+                        src={roomState.coverUrl || activeTrack?.coverUrl || `${SERVER_URL || ''}/api/library/covers/${activeTrack?.coverFilename || roomState.coverFilename}`}
                         alt="Cover"
                         className="w-full h-full object-cover"
                         onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
@@ -1004,7 +1242,14 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                     )}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase mb-1">Now Hosting</p>
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase">Now Hosting</p>
+                      {roomState.source === 'spotify' && (
+                        <span className="text-[9px] font-mono text-[#1DB954] bg-[#1DB954]/15 px-1 py-0.2 rounded border border-[#1DB954]/30">
+                          🟢 SPOTIFY
+                        </span>
+                      )}
+                    </div>
                     <p className="font-display text-lg text-noir-white leading-snug truncate">
                       {audioReady ? songName : 'No Song Loaded'}
                     </p>
@@ -1017,6 +1262,51 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                     </p>
                   </div>
                 </div>
+
+                {/* Spotify status & connect actions for host */}
+                {roomState.source === 'spotify' && !isSpotifyConnected && (
+                  <div className="p-3 bg-[#1DB954]/10 border border-[#1DB954]/30 rounded-xl space-y-2">
+                    <div className="flex items-center gap-1.5 text-[#1DB954] text-xs font-mono font-semibold">
+                      <span>🟢</span>
+                      <span>Spotify Connect Required</span>
+                    </div>
+                    <p className="text-[11px] font-body text-noir-ash leading-relaxed">
+                      Connect your Spotify account to control and synchronize Spotify audio.
+                    </p>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={connectSpotify}
+                      className="w-full text-xs text-[#1DB954] border-[#1DB954]/40 hover:bg-[#1DB954]/20 flex items-center justify-center gap-1.5"
+                    >
+                      <span>🟢</span>
+                      <span>Connect Spotify</span>
+                    </Button>
+                  </div>
+                )}
+
+                {roomState.source === 'spotify' && isSpotifyConnected && !isSpotifyPremium && (
+                  <div className="p-3 bg-amber-950/40 border border-amber-500/30 rounded-xl space-y-1 text-xs">
+                    <div className="flex items-center gap-1.5 text-amber-400 font-mono font-semibold">
+                      <span>⚠️</span>
+                      <span>Spotify Premium Required</span>
+                    </div>
+                    <p className="text-[11px] font-body text-noir-ash">
+                      Web Playback SDK requires Spotify Premium for browser streaming.
+                    </p>
+                  </div>
+                )}
+
+                {roomState.source === 'spotify' && isSpotifyConnected && isSpotifyPremium && spotifyPlaybackBlocked && (
+                  <Button
+                    variant="gold"
+                    size="sm"
+                    onClick={syncSpotifyAudio}
+                    className="w-full text-xs animate-pulse flex items-center justify-center gap-1.5"
+                  >
+                    🔊 Resume / Unlock Spotify Audio
+                  </Button>
+                )}
 
                 {/* Hidden native audio element (managed by parent App) */}
 
@@ -1245,18 +1535,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
         <main className="flex-1 flex flex-col overflow-hidden">
           {activeTab === 'universal' ? (
             <UniversalMusicView
-              onPlayTrack={(track) => {
-                if (track.capabilities.playback === 'noirsync_stream' && track.id) {
-                  const url = `${SERVER_URL || ''}/api/catalog/tracks/${track.id}/stream`;
-                  if (adapter) {
-                    adapter.setSrc(url);
-                    setAudioReady(true);
-                    setSongName(track.title);
-                    setIsPlaying(true);
-                    emitPlay(0, 0);
-                  }
-                }
-              }}
+              onPlayTrack={handleUniversalPlayTrack}
               activeTrackId={activeTrack?.id}
             />
           ) : activeTab === 'playlists' ? (
@@ -1330,7 +1609,10 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                 </div>
 
                 {libraryMode === 'r2' ? (
-                  <Library onLoadToRoom={handleR2TrackSelect} />
+                  <Library
+                    onLoadToRoom={handleR2TrackSelect}
+                    onPlaySpotifyTrack={handleUniversalPlayTrack}
+                  />
                 ) : libraryMode === 'playlists' ? (
                   <PlaylistBrowser
                     isHost={true}
@@ -1355,10 +1637,10 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
               {/* Song header */}
               {songName && (
                 <div className="px-8 pt-8 pb-2 shrink-0 flex items-center gap-4">
-                  {(activeTrack?.coverFilename || roomState.coverFilename) && (
+                  {(roomState.coverUrl || activeTrack?.coverUrl || activeTrack?.coverFilename || roomState.coverFilename) && (
                     <div className="w-16 h-16 rounded-xl bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 shadow-md">
                       <img
-                        src={`${SERVER_URL || ''}/api/library/covers/${activeTrack?.coverFilename || roomState.coverFilename}`}
+                        src={roomState.coverUrl || activeTrack?.coverUrl || `${SERVER_URL || ''}/api/library/covers/${activeTrack?.coverFilename || roomState.coverFilename}`}
                         alt="Cover"
                         className="w-full h-full object-cover"
                         onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
@@ -1366,7 +1648,14 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                     </div>
                   )}
                   <div className="min-w-0">
-                    <h1 className="font-display text-3xl text-noir-white truncate">{lrcMeta.title || songName}</h1>
+                    <div className="flex items-center gap-2">
+                      <h1 className="font-display text-3xl text-noir-white truncate">{lrcMeta.title || songName}</h1>
+                      {roomState.source === 'spotify' && (
+                        <span className="text-[10px] font-mono text-[#1DB954] bg-[#1DB954]/15 px-2 py-0.5 rounded border border-[#1DB954]/30 uppercase">
+                          🟢 Spotify Live
+                        </span>
+                      )}
+                    </div>
                     {lrcMeta.artist && (
                       <p className="font-body text-noir-ash mt-1 truncate">{lrcMeta.artist}</p>
                     )}
@@ -1439,25 +1728,54 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                 <span className="font-mono text-[10px] tracking-[0.25em] text-noir-ash uppercase">
                   Listeners ({sortedMembers.length})
                 </span>
+                {roomState.source === 'spotify' && (
+                  <span className="text-[9px] font-mono text-[#1DB954] bg-[#1DB954]/10 px-1.5 py-0.5 rounded border border-[#1DB954]/30">
+                    SPOTIFY ROOM
+                  </span>
+                )}
               </div>
-              <div className="max-h-32 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                {sortedMembers.map((m) => (
-                  <div key={m.id} className="flex items-center justify-between text-xs font-mono">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="shrink-0" title={m.role === 'host' ? 'Host' : 'Viewer'}>
-                        {m.role === 'host' ? '👑' : '🎧'}
-                      </span>
-                      <span className="text-noir-white truncate" title={m.displayName}>
-                        {m.displayName}
-                      </span>
+              <div className="max-h-36 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                {sortedMembers.map((m) => {
+                  const spotifyStatus = roomState.spotifyListeners?.find(l => l.socketId === m.id || l.userId === m.id);
+                  return (
+                    <div key={m.id} className="flex items-center justify-between text-xs font-mono">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="shrink-0" title={m.role === 'host' ? 'Host' : 'Viewer'}>
+                          {m.role === 'host' ? '👑' : '🎧'}
+                        </span>
+                        <span className="text-noir-white truncate" title={m.displayName}>
+                          {m.displayName}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {roomState.source === 'spotify' && (
+                          spotifyStatus?.inSync ? (
+                            <span className="text-[8px] text-[#1DB954] bg-[#1DB954]/15 px-1 py-0.5 rounded border border-[#1DB954]/30" title="In Sync">
+                              🟢 Sync
+                            </span>
+                          ) : spotifyStatus?.isReady ? (
+                            <span className="text-[8px] text-amber-400 bg-amber-400/15 px-1 py-0.5 rounded border border-amber-400/30" title="Ready">
+                              🟡 Ready
+                            </span>
+                          ) : spotifyStatus?.isConnected === false ? (
+                            <span className="text-[8px] text-noir-dim bg-noir-graphite px-1 py-0.5 rounded border border-noir-border" title="Unlinked">
+                              ⚪ Unlinked
+                            </span>
+                          ) : !spotifyStatus?.isPremium ? (
+                            <span className="text-[8px] text-red-400 bg-red-400/15 px-1 py-0.5 rounded border border-red-400/30" title="Non-Premium">
+                              ⚠️ Non-Prem
+                            </span>
+                          ) : null
+                        )}
+                        {m.id === getSocket().id && (
+                          <span className="text-[9px] text-accent-gold bg-accent-gold/10 px-1 rounded border border-accent-gold/20">
+                            You
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    {m.id === getSocket().id && (
-                      <span className="text-[9px] text-accent-gold bg-accent-gold/10 px-1 rounded border border-accent-gold/20">
-                        You
-                      </span>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </GlassPanel>
 
@@ -1510,9 +1828,9 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
             <GlassPanel className="p-4 space-y-4">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 rounded-lg bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 flex items-center justify-center shadow-sm">
-                  {(activeTrack?.coverFilename || roomState.coverFilename) ? (
+                  {(roomState.coverUrl || activeTrack?.coverUrl || activeTrack?.coverFilename || roomState.coverFilename) ? (
                     <img
-                      src={`${SERVER_URL || ''}/api/library/covers/${activeTrack?.coverFilename || roomState.coverFilename}`}
+                      src={roomState.coverUrl || activeTrack?.coverUrl || `${SERVER_URL || ''}/api/library/covers/${activeTrack?.coverFilename || roomState.coverFilename}`}
                       alt="Cover"
                       className="w-full h-full object-cover"
                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
@@ -1522,7 +1840,14 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase mb-1">Now Hosting</p>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase">Now Hosting</p>
+                    {roomState.source === 'spotify' && (
+                      <span className="text-[9px] font-mono text-[#1DB954] bg-[#1DB954]/15 px-1 py-0.2 rounded border border-[#1DB954]/30">
+                        🟢 SPOTIFY
+                      </span>
+                    )}
+                  </div>
                   <p className="font-display text-base text-noir-white leading-snug truncate">
                     {audioReady ? songName : 'No Song Loaded'}
                   </p>
@@ -1531,6 +1856,51 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                   )}
                 </div>
               </div>
+
+              {/* Spotify status & connect actions for mobile host */}
+              {roomState.source === 'spotify' && !isSpotifyConnected && (
+                <div className="p-3 bg-[#1DB954]/10 border border-[#1DB954]/30 rounded-xl space-y-2">
+                  <div className="flex items-center gap-1.5 text-[#1DB954] text-xs font-mono font-semibold">
+                    <span>🟢</span>
+                    <span>Spotify Connect Required</span>
+                  </div>
+                  <p className="text-[11px] font-body text-noir-ash leading-relaxed">
+                    Connect your Spotify account to control and synchronize Spotify audio.
+                  </p>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={connectSpotify}
+                    className="w-full text-xs text-[#1DB954] border-[#1DB954]/40 hover:bg-[#1DB954]/20 flex items-center justify-center gap-1.5"
+                  >
+                    <span>🟢</span>
+                    <span>Connect Spotify</span>
+                  </Button>
+                </div>
+              )}
+
+              {roomState.source === 'spotify' && isSpotifyConnected && !isSpotifyPremium && (
+                <div className="p-3 bg-amber-950/40 border border-amber-500/30 rounded-xl space-y-1 text-xs">
+                  <div className="flex items-center gap-1.5 text-amber-400 font-mono font-semibold">
+                    <span>⚠️</span>
+                    <span>Spotify Premium Required</span>
+                  </div>
+                  <p className="text-[11px] font-body text-noir-ash">
+                    Web Playback SDK requires Spotify Premium for browser streaming.
+                  </p>
+                </div>
+              )}
+
+              {roomState.source === 'spotify' && isSpotifyConnected && isSpotifyPremium && spotifyPlaybackBlocked && (
+                <Button
+                  variant="gold"
+                  size="sm"
+                  onClick={syncSpotifyAudio}
+                  className="w-full text-xs animate-pulse flex items-center justify-center gap-1.5"
+                >
+                  🔊 Resume / Unlock Spotify Audio
+                </Button>
+              )}
 
               {/* Progress */}
               <div className="space-y-1">
@@ -1695,18 +2065,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
         {mobileTab === 'universal' && (
           <div className="h-[calc(100vh-8rem)]">
             <UniversalMusicView
-              onPlayTrack={(track) => {
-                if (track.capabilities.playback === 'noirsync_stream' && track.id) {
-                  const url = `${SERVER_URL || ''}/api/catalog/tracks/${track.id}/stream`;
-                  if (adapter) {
-                    adapter.setSrc(url);
-                    setAudioReady(true);
-                    setSongName(track.title);
-                    setIsPlaying(true);
-                    emitPlay(0, 0);
-                  }
-                }
-              }}
+              onPlayTrack={handleUniversalPlayTrack}
               activeTrackId={activeTrack?.id}
             />
           </div>
@@ -1772,7 +2131,10 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
             </div>
 
             {libraryMode === 'r2' ? (
-              <Library onLoadToRoom={handleR2TrackSelect} />
+              <Library
+                onLoadToRoom={handleR2TrackSelect}
+                onPlaySpotifyTrack={handleUniversalPlayTrack}
+              />
             ) : libraryMode === 'playlists' ? (
               <PlaylistBrowser
                 isHost={true}
@@ -1905,7 +2267,10 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
             {/* Library content */}
             <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
               {libraryMode === 'r2' ? (
-                <Library onSelectTrack={handleR2TrackSelect} />
+                <Library
+                  onSelectTrack={handleR2TrackSelect}
+                  onPlaySpotifyTrack={handleUniversalPlayTrack}
+                />
               ) : libraryMode === 'playlists' ? (
                 <PlaylistBrowser
                   isHost={true}

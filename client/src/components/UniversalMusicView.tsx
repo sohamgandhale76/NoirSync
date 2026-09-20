@@ -43,6 +43,10 @@ export function UniversalMusicView({ onPlayTrack, activeTrackId }: UniversalMusi
   const [modalTrack, setModalTrack] = useState<UniversalTrack | null>(null);
 
   const handlePlaySpotify = async (track: UniversalTrack) => {
+    if (onPlayTrack) {
+      onPlayTrack(track);
+      return;
+    }
     const uri = track.providerTrackId
       ? `spotify:track:${track.providerTrackId}`
       : track.id || '';
