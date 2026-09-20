@@ -11,17 +11,21 @@ declare global {
 let loadPromise: Promise<any> | null = null;
 
 export function loadSpotifySDK(timeoutMs = 10000): Promise<any> {
+  console.info('[SpotifySDKLoader] loadSpotifySDK called. window.Spotify exists:', Boolean(window?.Spotify), 'loadPromise exists:', Boolean(loadPromise));
+
   if (typeof window === 'undefined') {
     return Promise.reject(new Error('Window not available'));
   }
 
   // 1. If Spotify SDK object is already available on window
   if (window.Spotify) {
+    console.info('[SpotifySDKLoader] window.Spotify already detected immediately on entry.');
     return Promise.resolve(window.Spotify);
   }
 
   // 2. Return existing singleton in-flight promise
   if (loadPromise) {
+    console.info('[SpotifySDKLoader] Returning existing in-flight loadPromise singleton.');
     return loadPromise;
   }
 
@@ -34,8 +38,9 @@ export function loadSpotifySDK(timeoutMs = 10000): Promise<any> {
       if (pollInterval) clearInterval(pollInterval);
     };
 
-    const handleSuccess = () => {
+    const handleSuccess = (source: string) => {
       cleanup();
+      console.info(`[SpotifySDKLoader] handleSuccess triggered via [${source}]. window.Spotify present:`, Boolean(window.Spotify));
       if (window.Spotify) {
         resolve(window.Spotify);
       } else {
@@ -47,24 +52,28 @@ export function loadSpotifySDK(timeoutMs = 10000): Promise<any> {
     // Chain onto existing onSpotifyWebPlaybackSDKReady if present
     const previousOnReady = window.onSpotifyWebPlaybackSDKReady;
     window.onSpotifyWebPlaybackSDKReady = () => {
+      console.info('[SpotifySDKLoader] window.onSpotifyWebPlaybackSDKReady callback invoked by SDK script.');
       if (typeof previousOnReady === 'function') {
-        try { previousOnReady(); } catch { /* ignore */ }
+        try { previousOnReady(); } catch (err) { console.warn('[SpotifySDKLoader] previousOnReady error:', err); }
       }
-      handleSuccess();
+      handleSuccess('onSpotifyWebPlaybackSDKReady');
     };
 
     // Polling fallback in case onSpotifyWebPlaybackSDKReady already fired or window.Spotify appears
     pollInterval = setInterval(() => {
       if (window.Spotify) {
-        handleSuccess();
+        console.info('[SpotifySDKLoader] Polling interval detected window.Spotify.');
+        handleSuccess('pollInterval');
       }
     }, 100);
 
     // Timeout guard
     timer = setTimeout(() => {
       cleanup();
+      console.warn('[SpotifySDKLoader] Timeout reached waiting for Spotify Web Playback SDK.');
       loadPromise = null;
       if (window.Spotify) {
+        console.info('[SpotifySDKLoader] window.Spotify found at timeout.');
         resolve(window.Spotify);
       } else {
         reject(new Error('Timeout loading Spotify Web Playback SDK (check network or ad-blocker)'));
@@ -74,12 +83,18 @@ export function loadSpotifySDK(timeoutMs = 10000): Promise<any> {
     // Check if script tag already exists in DOM
     const existingScript = document.getElementById('spotify-player-sdk') as HTMLScriptElement | null;
     if (existingScript) {
-      existingScript.addEventListener('error', () => {
+      if (window.Spotify) {
+        console.info('[SpotifySDKLoader] Existing script tag detected and window.Spotify is present. Resolving immediately.');
         cleanup();
-        loadPromise = null;
-        reject(new Error('Failed to load Spotify Web Playback SDK script'));
-      }, { once: true });
-      return;
+        resolve(window.Spotify);
+        return;
+      }
+      console.warn('[SpotifySDKLoader] Stale or non-ready script tag detected in DOM without active loader. Removing stale element to force fresh load.');
+      if (existingScript.parentNode) {
+        existingScript.parentNode.removeChild(existingScript);
+      } else {
+        existingScript.remove();
+      }
     }
 
     // Inject singleton script tag
@@ -88,12 +103,23 @@ export function loadSpotifySDK(timeoutMs = 10000): Promise<any> {
     script.src = 'https://sdk.scdn.co/spotify-player.js';
     script.async = true;
 
-    script.onerror = () => {
+    script.onload = () => {
+      console.info('[SpotifySDKLoader] Script tag fired onload event. Waiting for onSpotifyWebPlaybackSDKReady or window.Spotify.');
+    };
+
+    script.onerror = (err) => {
       cleanup();
       loadPromise = null;
+      if (script.parentNode) {
+        script.parentNode.removeChild(script);
+      } else {
+        script.remove();
+      }
+      console.error('[SpotifySDKLoader] Script tag fired onerror event. Network or CSP blocked.', err);
       reject(new Error('Failed to load Spotify Web Playback SDK script (network or CSP blocked)'));
     };
 
+    console.info('[SpotifySDKLoader] Inserting <script> element into document.body with src:', script.src);
     document.body.appendChild(script);
   });
 

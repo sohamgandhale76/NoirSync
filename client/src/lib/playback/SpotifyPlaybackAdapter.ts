@@ -58,82 +58,87 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
     if (this.initPromise) return this.initPromise;
 
     this.initPromise = (async () => {
-      const SpotifySDK = await loadSpotifySDK();
-      if (this.isDestroyed) return;
+      try {
+        const SpotifySDK = await loadSpotifySDK();
+        if (this.isDestroyed) return;
 
-      this.player = new SpotifySDK.Player({
-        name: 'NoirSync Web Player',
-        getOAuthToken: async (cb: (token: string) => void) => {
-          try {
-            const token = await this.fetchPlaybackToken();
-            cb(token);
-          } catch (err) {
-            this.emit('waiting', err);
+        this.player = new SpotifySDK.Player({
+          name: 'NoirSync Web Player',
+          getOAuthToken: async (cb: (token: string) => void) => {
+            try {
+              const token = await this.fetchPlaybackToken();
+              cb(token);
+            } catch (err) {
+              this.emit('waiting', err);
+            }
+          },
+          volume: this.volume
+        });
+
+        // SDK Events
+        this.player.addListener('ready', ({ device_id }: { device_id: string }) => {
+          this.deviceId = device_id;
+          this.isPlayerReady = true;
+          this.emit('canplay');
+        });
+
+        this.player.addListener('not_ready', () => {
+          this.isPlayerReady = false;
+          this.deviceId = null;
+        });
+
+        this.player.addListener('player_state_changed', (state: any) => {
+          if (!state) {
+            this.isPaused = true;
+            this.emit('pause');
+            return;
           }
-        },
-        volume: this.volume
-      });
 
-      // SDK Events
-      this.player.addListener('ready', ({ device_id }: { device_id: string }) => {
-        this.deviceId = device_id;
-        this.isPlayerReady = true;
-        this.emit('canplay');
-      });
+          const prevPaused = this.isPaused;
+          this.isPaused = state.paused;
+          this.positionMs = state.position || 0;
+          this.durationMs = state.duration || 0;
+          this.lastPositionUpdateTime = Date.now();
 
-      this.player.addListener('not_ready', () => {
-        this.isPlayerReady = false;
-        this.deviceId = null;
-      });
-
-      this.player.addListener('player_state_changed', (state: any) => {
-        if (!state) {
-          this.isPaused = true;
-          this.emit('pause');
-          return;
-        }
-
-        const prevPaused = this.isPaused;
-        this.isPaused = state.paused;
-        this.positionMs = state.position || 0;
-        this.durationMs = state.duration || 0;
-        this.lastPositionUpdateTime = Date.now();
-
-        if (state.track_window?.current_track) {
-          const trackUri = state.track_window.current_track.uri;
-          if (trackUri === this.currentSpotifyUri) {
-            this.trackLoadedInPlayer = true;
+          if (state.track_window?.current_track) {
+            const trackUri = state.track_window.current_track.uri;
+            if (trackUri === this.currentSpotifyUri) {
+              this.trackLoadedInPlayer = true;
+            }
           }
-        }
 
-        this.emit('timeupdate');
-        this.emit('durationchange');
+          this.emit('timeupdate');
+          this.emit('durationchange');
 
-        if (prevPaused && !state.paused) {
-          this.emit('play');
-          this.emit('playing');
-        } else if (!prevPaused && state.paused) {
-          this.emit('pause');
-        }
+          if (prevPaused && !state.paused) {
+            this.emit('play');
+            this.emit('playing');
+          } else if (!prevPaused && state.paused) {
+            this.emit('pause');
+          }
 
-        if (state.position === 0 && state.paused && state.restrictions?.disallow_resuming_reasons) {
-          this.emit('ended');
-        }
-      });
+          if (state.position === 0 && state.paused && state.restrictions?.disallow_resuming_reasons) {
+            this.emit('ended');
+          }
+        });
 
-      this.player.addListener('initialization_error', ({ message }: { message: string }) => {
-        this.emit('waiting', new Error(message));
-      });
+        this.player.addListener('initialization_error', ({ message }: { message: string }) => {
+          this.emit('waiting', new Error(message));
+        });
 
-      this.player.addListener('authentication_error', ({ message }: { message: string }) => {
-        this.emit('waiting', new Error(message));
-      });
+        this.player.addListener('authentication_error', ({ message }: { message: string }) => {
+          this.emit('waiting', new Error(message));
+        });
 
-      this.player.addListener('account_error', ({ message }: { message: string }) => {
-        this.emit('waiting', new Error(message));
-      });
+        this.player.addListener('account_error', ({ message }: { message: string }) => {
+          this.emit('waiting', new Error(message));
+        });
 
-      await this.player.connect();
+        await this.player.connect();
+      } catch (err) {
+        this.initPromise = null;
+        throw err;
+      }
     })();
 
     return this.initPromise;

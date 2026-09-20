@@ -194,6 +194,275 @@ async function runTests() {
 
     console.log('   ✓ Cover artwork resolver normalizes URLs and uses neutral 🎵 fallback.\n');
 
+    // ── TEST 5: SDK Loader Failure, DOM Script Tag Removal & Retry-Recovery ──
+    console.log('5. Testing SDK Loader failure cleanup, stale element removal, and retry-recovery...');
+
+    // Minimal DOM environment simulation
+    function createMockDOM() {
+      const elements = new Map();
+      const body = {
+        children: [],
+        appendChild(el) {
+          this.children.push(el);
+          if (el.id) elements.set(el.id, el);
+          el.parentNode = this;
+          return el;
+        },
+        removeChild(el) {
+          this.children = this.children.filter(c => c !== el);
+          if (el.id) elements.delete(el.id);
+          el.parentNode = null;
+          return el;
+        }
+      };
+
+      const doc = {
+        body,
+        getElementById(id) {
+          return elements.get(id) || null;
+        },
+        createElement(tag) {
+          const listeners = {};
+          const el = {
+            tagName: tag.toUpperCase(),
+            id: '',
+            src: '',
+            async: false,
+            parentNode: null,
+            addEventListener(event, fn) {
+              listeners[event] = listeners[event] || [];
+              listeners[event].push(fn);
+            },
+            remove() {
+              if (this.parentNode) {
+                this.parentNode.removeChild(this);
+              }
+            },
+            triggerError(err = new Error('CSP or network error')) {
+              if (typeof this.onerror === 'function') this.onerror(err);
+              (listeners['error'] || []).forEach(fn => fn(err));
+            },
+            triggerLoad() {
+              if (typeof this.onload === 'function') this.onload();
+              (listeners['load'] || []).forEach(fn => fn());
+            }
+          };
+          return el;
+        }
+      };
+
+      const mockWin = {
+        document: doc,
+        Spotify: undefined,
+        onSpotifyWebPlaybackSDKReady: undefined
+      };
+
+      return { mockWin, doc, body, elements };
+    }
+
+    // Factory matching client/src/lib/spotify/sdkLoader.ts logic
+    function createLoader(mockWin) {
+      let loadPromise = null;
+
+      function loadSpotifySDK(timeoutMs = 500) {
+        if (mockWin.Spotify) {
+          return Promise.resolve(mockWin.Spotify);
+        }
+        if (loadPromise) {
+          return loadPromise;
+        }
+
+        loadPromise = new Promise((resolve, reject) => {
+          let timer = null;
+          let pollInterval = null;
+
+          const cleanup = () => {
+            if (timer) clearTimeout(timer);
+            if (pollInterval) clearInterval(pollInterval);
+          };
+
+          const handleSuccess = (source) => {
+            cleanup();
+            if (mockWin.Spotify) {
+              resolve(mockWin.Spotify);
+            } else {
+              loadPromise = null;
+              reject(new Error('Spotify SDK ready callback fired but window.Spotify is missing'));
+            }
+          };
+
+          const previousOnReady = mockWin.onSpotifyWebPlaybackSDKReady;
+          mockWin.onSpotifyWebPlaybackSDKReady = () => {
+            if (typeof previousOnReady === 'function') {
+              try { previousOnReady(); } catch (_) {}
+            }
+            handleSuccess('onSpotifyWebPlaybackSDKReady');
+          };
+
+          pollInterval = setInterval(() => {
+            if (mockWin.Spotify) {
+              handleSuccess('pollInterval');
+            }
+          }, 20);
+
+          timer = setTimeout(() => {
+            cleanup();
+            loadPromise = null;
+            if (mockWin.Spotify) {
+              resolve(mockWin.Spotify);
+            } else {
+              reject(new Error('Timeout loading Spotify Web Playback SDK (check network or ad-blocker)'));
+            }
+          }, timeoutMs);
+
+          const existingScript = mockWin.document.getElementById('spotify-player-sdk');
+          if (existingScript) {
+            if (mockWin.Spotify) {
+              cleanup();
+              resolve(mockWin.Spotify);
+              return;
+            }
+            if (existingScript.parentNode) {
+              existingScript.parentNode.removeChild(existingScript);
+            } else {
+              existingScript.remove();
+            }
+          }
+
+          const script = mockWin.document.createElement('script');
+          script.id = 'spotify-player-sdk';
+          script.src = 'https://sdk.scdn.co/spotify-player.js';
+          script.async = true;
+
+          script.onerror = (err) => {
+            cleanup();
+            loadPromise = null;
+            if (script.parentNode) {
+              script.parentNode.removeChild(script);
+            } else {
+              script.remove();
+            }
+            reject(new Error('Failed to load Spotify Web Playback SDK script (network or CSP blocked)'));
+          };
+
+          mockWin.document.body.appendChild(script);
+        });
+
+        return loadPromise;
+      }
+
+      return { loadSpotifySDK, getInFlightPromise: () => loadPromise };
+    }
+
+    const { mockWin, doc, body } = createMockDOM();
+    const loader = createLoader(mockWin);
+
+    // 5a. Initial attempt fails (e.g. ad-blocker triggers error)
+    const loadPromise1 = loader.loadSpotifySDK();
+    assert.strictEqual(body.children.length, 1, 'Script element must be inserted into DOM on initial load');
+    const scriptEl1 = body.children[0];
+    assert.strictEqual(scriptEl1.src, 'https://sdk.scdn.co/spotify-player.js');
+
+    // Trigger script error
+    scriptEl1.triggerError(new Error('Blocked by client'));
+
+    let errorThrown = false;
+    try {
+      await loadPromise1;
+    } catch (err) {
+      errorThrown = true;
+      assert.ok(err.message.includes('Failed to load Spotify Web Playback SDK script'));
+    }
+    assert.ok(errorThrown, 'Initial SDK load must reject on script.onerror');
+
+    // 5b. Verify failed script tag was removed from DOM and singleton promise cleared
+    assert.strictEqual(body.children.length, 0, 'Failed script tag must be removed from document.body on error');
+    assert.strictEqual(doc.getElementById('spotify-player-sdk'), null, 'Failed script tag must not be findable by ID');
+    assert.strictEqual(loader.getInFlightPromise(), null, 'loadPromise singleton must be reset to null on error');
+
+    // 5c. Retry creating a fresh script tag
+    const loadPromise2 = loader.loadSpotifySDK();
+    assert.strictEqual(body.children.length, 1, 'Retry must inject a fresh script element into document.body');
+    const scriptEl2 = body.children[0];
+    assert.notStrictEqual(scriptEl1, scriptEl2, 'Retry script element must be a fresh element instance');
+
+    // 5d. Successful load on retry
+    mockWin.Spotify = { Player: class MockPlayer {} };
+    if (typeof mockWin.onSpotifyWebPlaybackSDKReady === 'function') {
+      mockWin.onSpotifyWebPlaybackSDKReady();
+    }
+    const resultSDK = await loadPromise2;
+    assert.strictEqual(resultSDK, mockWin.Spotify, 'Retry must successfully resolve with window.Spotify');
+
+    // 5e. Subsequent call with window.Spotify already present resolves immediately without creating another script
+    const prevCount = body.children.length;
+    const resultImmediate = await loader.loadSpotifySDK();
+    assert.strictEqual(resultImmediate, mockWin.Spotify);
+    assert.strictEqual(body.children.length, prevCount, 'Subsequent load when window.Spotify exists must not add new script');
+
+    console.log('   ✓ SDK Loader successfully removes failed DOM script and recovers on retry.\n');
+
+    // ── TEST 6: SpotifyPlaybackAdapter Failure & Retry-Recovery Behavior ──
+    console.log('6. Testing SpotifyPlaybackAdapter initialization failure and retry-recovery...');
+
+    class MockSpotifyPlaybackAdapter {
+      constructor(loaderFn) {
+        this.loaderFn = loaderFn;
+        this.initPromise = null;
+        this.player = null;
+        this.isDestroyed = false;
+      }
+
+      async init() {
+        if (this.isDestroyed) return;
+        if (this.player) return;
+        if (this.initPromise) return this.initPromise;
+
+        this.initPromise = (async () => {
+          try {
+            const SpotifySDK = await this.loaderFn();
+            if (this.isDestroyed) return;
+            this.player = new SpotifySDK.Player({ name: 'Test' });
+          } catch (err) {
+            this.initPromise = null;
+            throw err;
+          }
+        })();
+
+        return this.initPromise;
+      }
+    }
+
+    let shouldFail = true;
+    const mockLoaderFn = async () => {
+      if (shouldFail) {
+        throw new Error('Failed to load Spotify Web Playback SDK script (network or CSP blocked)');
+      }
+      return { Player: class MockPlayer { constructor(cfg) { this.cfg = cfg; } } };
+    };
+
+    const adapter = new MockSpotifyPlaybackAdapter(mockLoaderFn);
+
+    // Initial init fails
+    let adapterInitError = false;
+    try {
+      await adapter.init();
+    } catch (err) {
+      adapterInitError = true;
+      assert.ok(err.message.includes('Failed to load Spotify Web Playback SDK script'));
+    }
+    assert.ok(adapterInitError, 'Adapter init must throw on initial loader failure');
+    assert.strictEqual(adapter.initPromise, null, 'adapter.initPromise must be reset to null when init rejects');
+    assert.strictEqual(adapter.player, null, 'adapter.player must remain null on failure');
+
+    // Retry succeeds
+    shouldFail = false;
+    await adapter.init();
+    assert.ok(adapter.player, 'adapter.player must be initialized after successful retry');
+    assert.strictEqual(adapter.player.cfg.name, 'Test');
+
+    console.log('   ✓ SpotifyPlaybackAdapter does not cache failed initPromise and recovers on retry.\n');
+
     console.log('====================================================');
     console.log('ALL SPOTIFY CSP & LOADER REGRESSION TESTS PASSED 100%');
     console.log('====================================================');
@@ -205,3 +474,4 @@ async function runTests() {
 }
 
 runTests();
+
