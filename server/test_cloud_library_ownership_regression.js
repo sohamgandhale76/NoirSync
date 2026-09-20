@@ -68,7 +68,7 @@ app.get(['/api/library/tracks/:id/download', '/api/library/tracks/:id/download/:
       }
 
       const isPublicCatalog = r2Track.provider === 'noirsync_public' && r2Track.publication_status === 'published';
-      const isSharedCloud = r2Track.provider === 'local' && r2Track.user_id !== null;
+      const isSharedCloud = r2Track.provider === 'local';
 
       if (!isPublicCatalog && !isSharedCloud) {
         return res.status(403).json({ error: 'Forbidden', message: 'Track is not available for download' });
@@ -441,6 +441,15 @@ async function runTests() {
     assert.strictEqual(delUnownedRes.status, 403, `Expected 403 Forbidden, got ${delUnownedRes.status}`);
     console.log('PASS: Deletion of unowned / system track is rejected with HTTP 403 Forbidden.');
 
+    // Verify unowned track DOES appear in GET /library for all users
+    const listWithUnowned = await httpRequest({
+      method: 'GET',
+      path: '/library',
+      headers: { 'Cookie': cookieA },
+    });
+    assert.ok(listWithUnowned.json.some(t => t.id === unownedTrackId), 'Unowned shared Cloud track must appear in GET /library');
+    console.log('PASS: Unowned shared Cloud track appears in GET /library for all users.');
+
     // Test 12: Uploader can delete their own track
     console.log('\nTest 12: Uploader can delete their own track...');
     const uploadDel = buildMultipart({
@@ -623,11 +632,11 @@ async function runTests() {
 
     // 21c: Metadata-only track (audio_key = NULL) -> 404
     const metaTrack = await insertTrack({
-      id: 'meta-only-track-test-uuid',
+      id: `meta_only_${runId}_${uuidv4().slice(0, 8)}`,
       title: 'Spotify Metadata Only',
       artist: 'Artist',
       provider: 'spotify',
-      provider_track_id: 'spotify-123',
+      provider_track_id: `spotify_${runId}`,
       audio_key: null,
       user_id: null,
     });
@@ -639,26 +648,51 @@ async function runTests() {
     assert.strictEqual(metaDownloadRes.status, 404, 'Metadata-only track without audio_key must return 404');
     console.log('PASS: Metadata-only track without audio_key returns 404.');
 
-    // 21d: Legacy orphan track (provider = 'local', user_id = NULL) -> 403
-    const orphanTrack = await insertTrack({
-      id: 'orphan-track-test-uuid',
-      title: 'Legacy Orphan Track',
+    // 21d: Historical shared Cloud track (provider = 'local', user_id = NULL, audio_key != NULL)
+    // - Anonymous download -> 401
+    // - Authenticated download -> 200
+    const historicalTrack = await insertTrack({
+      id: `hist_shared_${runId}_${uuidv4().slice(0, 8)}`,
+      title: 'Historical Shared Cloud Track',
       artist: 'Artist',
       provider: 'local',
-      audio_key: 'orphan/audio.mp3',
+      audio_key: 'historical/audio.mp3',
       user_id: null,
     });
-    const orphanDownloadRes = await httpRequest({
+    const anonHistoricalRes = await httpRequest({
       method: 'GET',
-      path: `/api/library/tracks/${orphanTrack.id}/download`,
+      path: `/api/library/tracks/${historicalTrack.id}/download`,
+    });
+    assert.strictEqual(anonHistoricalRes.status, 401, 'Anonymous download of historical shared Cloud track must return 401');
+
+    const authHistoricalRes = await httpRequest({
+      method: 'GET',
+      path: `/api/library/tracks/${historicalTrack.id}/download`,
       headers: { 'Cookie': cookieA },
     });
-    assert.strictEqual(orphanDownloadRes.status, 403, 'Legacy orphan track without user_id must return 403');
-    console.log('PASS: Legacy orphan track without user_id returns 403.');
+    assert.strictEqual(authHistoricalRes.status, 200, 'Authenticated user must be able to stream historical shared Cloud track');
+    console.log('PASS: Historical shared Cloud track (user_id = null) is accessible to authenticated users.');
+
+    // 21f: Unauthorized provider record with audio_key -> 403
+    const unauthorizedTrack = await insertTrack({
+      id: `unauth_${runId}_${uuidv4().slice(0, 8)}`,
+      title: 'Unauthorized Provider Track',
+      artist: 'Artist',
+      provider: 'unauthorized_provider',
+      audio_key: 'unauth/audio.mp3',
+      user_id: null,
+    });
+    const unauthDownloadRes = await httpRequest({
+      method: 'GET',
+      path: `/api/library/tracks/${unauthorizedTrack.id}/download`,
+      headers: { 'Cookie': cookieA },
+    });
+    assert.strictEqual(unauthDownloadRes.status, 403, 'Unauthorized provider record must return 403');
+    console.log('PASS: Unauthorized provider record returns 403.');
 
     // 21e: Universal public NoirSync content (provider = 'noirsync_public', published) -> anonymous 200
     const publicTrack = await insertTrack({
-      id: 'public-catalog-track-test-uuid',
+      id: `public_${runId}_${uuidv4().slice(0, 8)}`,
       title: 'Universal Public Song',
       artist: 'Catalog Artist',
       provider: 'noirsync_public',

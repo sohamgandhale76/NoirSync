@@ -56,6 +56,43 @@ function getProviderBadge(provider: string) {
   }
 }
 
+function normalizeArtworkUrl(url: string | null | undefined): string | null {
+  if (!url || typeof url !== 'string' || !url.trim()) return null;
+  const trimmed = url.trim();
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('data:') || trimmed.startsWith('blob:')) {
+    return trimmed;
+  }
+  const base = SERVER_URL || '';
+  return `${base}${trimmed.startsWith('/') ? '' : '/'}${trimmed}`;
+}
+
+function resolveTrackArtwork(track: UniversalTrack): { primary: string | null; fallback: string | null } {
+  let primary: string | null = null;
+  let fallback: string | null = null;
+
+  if (track.coverUrl) {
+    primary = normalizeArtworkUrl(track.coverUrl);
+  } else if (track.provider === 'local' && track.id) {
+    primary = normalizeArtworkUrl(`/library/${track.id}/cover`);
+  }
+
+  // Provider-specific alternate fallbacks
+  if (track.provider === 'youtube' && track.providerTrackId) {
+    const cleanYtId = String(track.providerTrackId).replace(/^yt_/, '');
+    if (cleanYtId) {
+      const hq = `https://i.ytimg.com/vi/${cleanYtId}/hqdefault.jpg`;
+      const mq = `https://i.ytimg.com/vi/${cleanYtId}/mqdefault.jpg`;
+      if (primary && primary !== hq) {
+        fallback = hq;
+      } else if (primary !== mq) {
+        fallback = mq;
+      }
+    }
+  }
+
+  return { primary, fallback };
+}
+
 export function UniversalTrackCard({
   track,
   onPlay,
@@ -68,17 +105,27 @@ export function UniversalTrackCard({
 }: UniversalTrackCardProps) {
   const badge = getProviderBadge(track.provider);
   const { capabilities } = track;
-  const [imgError, setImgError] = useState(false);
+  const { primary, fallback } = resolveTrackArtwork(track);
+
+  const [currentSrc, setCurrentSrc] = useState<string | null>(primary);
+  const [hasError, setHasError] = useState(false);
+  const [triedFallback, setTriedFallback] = useState(false);
 
   useEffect(() => {
-    setImgError(false);
-  }, [track.coverUrl]);
+    setCurrentSrc(primary);
+    setHasError(!primary);
+    setTriedFallback(false);
+  }, [track.id, track.coverUrl, track.providerTrackId, primary]);
 
-  const resolvedCoverUrl = track.coverUrl
-    ? (track.coverUrl.startsWith('http://') || track.coverUrl.startsWith('https://')
-        ? track.coverUrl
-        : `${SERVER_URL || ''}${track.coverUrl.startsWith('/') ? '' : '/'}${track.coverUrl}`)
-    : null;
+  const handleImageError = () => {
+    if (!triedFallback && fallback && fallback !== currentSrc) {
+      setTriedFallback(true);
+      setCurrentSrc(fallback);
+    } else {
+      setHasError(true);
+      setCurrentSrc(null);
+    }
+  };
 
   const handleDownload = () => {
     if (!capabilities.download || !track.id) return;
@@ -92,16 +139,16 @@ export function UniversalTrackCard({
       <div className="flex items-center gap-3.5 min-w-0 flex-1">
         {/* Artwork */}
         <div className="relative w-14 h-14 rounded-lg bg-noir-graphite border border-noir-border/40 overflow-hidden shrink-0 flex items-center justify-center">
-          {resolvedCoverUrl && !imgError ? (
+          {currentSrc && !hasError ? (
             <img
-              src={resolvedCoverUrl}
+              src={currentSrc}
               alt={track.title}
               className="w-full h-full object-cover"
               loading="lazy"
-              onError={() => setImgError(true)}
+              onError={handleImageError}
             />
           ) : (
-            <span className="text-xl opacity-40">{badge.icon}</span>
+            <span className="text-xl opacity-35 text-accent-gold select-none">🎵</span>
           )}
 
           {/* Overlay Play trigger if streamable */}

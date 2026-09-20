@@ -214,14 +214,14 @@ async function insertTrack(track, client = pool) {
  * Retrieve all shared Cloud/R2 tracks.
  * Invariants:
  * - audio_key IS NOT NULL (strictly persistent R2 audio, not catalog metadata-only tracks)
- * - user_id IS NOT NULL (strictly attributed user uploads, not unowned/legacy orphans)
  * - provider = 'local' (strictly Cloud Library audio, not external provider records)
+ * - user_id is optional attribution metadata, NOT an access gate
  * - Ordered by uploaded_at descending
  * @returns {Promise<Array>}
  */
 async function getSharedCloudTracks() {
   const result = await pool.query(
-    "SELECT * FROM tracks WHERE audio_key IS NOT NULL AND user_id IS NOT NULL AND provider = 'local' ORDER BY uploaded_at DESC"
+    "SELECT * FROM tracks WHERE audio_key IS NOT NULL AND provider = 'local' ORDER BY uploaded_at DESC"
   );
   return result.rows;
 }

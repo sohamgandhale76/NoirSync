@@ -617,7 +617,7 @@ function SpotifyTrackCard({
             onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
           />
         ) : (
-          <span className="text-xl opacity-35 text-[#1db954]">🎵</span>
+          <span className="text-xl opacity-35 text-accent-gold">🎵</span>
         )}
       </div>
 

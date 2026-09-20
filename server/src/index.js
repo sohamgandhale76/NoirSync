@@ -47,7 +47,9 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-      'connect-src': ["'self'", "ws:", "wss:"],
+      'script-src': ["'self'", "https://sdk.scdn.co"],
+      'connect-src': ["'self'", "ws:", "wss:", "https://*.spotify.com", "https://*.scdn.co", "wss://*.spotify.com"],
+      'frame-src': ["'self'", "https://sdk.scdn.co"],
       'media-src': ["'self'", "blob:", "data:", "https://*"],
       'img-src': ["'self'", "data:", "blob:", "https://*"],
     },
@@ -416,11 +418,11 @@ app.get(['/api/library/tracks/:id/download', '/api/library/tracks/:id/download/:
       // Case B: Public NoirSync catalog track (published)
       const isPublicCatalog = r2Track.provider === 'noirsync_public' && r2Track.publication_status === 'published';
       
-      // Case A: Shared Cloud Library track (provider = 'local' and user_id != null)
-      const isSharedCloud = r2Track.provider === 'local' && r2Track.user_id !== null;
+      // Case A: Shared Cloud Library track (provider = 'local')
+      const isSharedCloud = r2Track.provider === 'local';
 
       if (!isPublicCatalog && !isSharedCloud) {
-        // Legacy orphan local tracks (user_id is null) or unauthorized provider records
+        // Unauthorized provider records
         return res.status(403).json({ error: 'Forbidden', message: 'Track is not available for download' });
       }
 

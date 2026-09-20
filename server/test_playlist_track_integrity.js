@@ -5,7 +5,8 @@
 // 3. User B retrieves playlist containing User A's Cloud track; track is present and R2 keys sanitized
 // 4. No duplicate track row created when multiple users add same Cloud track
 // 5. Private non-cloud track (audio_key IS NULL, user_id = userA): User A can add, User B cannot (HTTP 404)
-// 6. Orphaned/legacy local track (user_id = NULL, audio_key = NULL) cannot be added (HTTP 404)
+// 6. Shared Cloud track with user_id = NULL (audio_key IS NOT NULL) can be added to playlists by any user
+// 7. Invalid local track (user_id = NULL, audio_key = NULL) cannot be added (HTTP 404)
 // 7. Canonical provider tracks (spotify, youtube, apple with user_id = NULL) can be added by multiple users
 // 8. Historical invalid reference cleanup (cleanupInvalidPlaylistTracks detaches non-cloud cross-user references, preserves shared Cloud tracks)
 // 9. Playlist response sanitization: raw R2 keys (audio_key, cover_key, lyrics_key) never exposed
@@ -130,28 +131,48 @@ async function runRegression() {
     assert.ok(userBAddBlocked, 'User B adding User A private non-cloud track must be rejected with HTTP 404');
     console.log('   ✓ User B cannot add User A private non-cloud track to User B playlist (HTTP 404).\n');
 
-    // ── TEST 3: Orphaned local track (user_id = NULL) cannot be added even with audio_key ──
-    console.log('4. Testing orphaned/legacy local track (user_id = NULL) even with audio_key...');
-    const orphanedLocalTrack = await db.insertTrack({
-      id: `trk_orph_${testRunId}`,
-      title: 'Legacy Orphaned Local Track With Audio Key',
-      artist: 'Unknown Artist',
+    // ── TEST 3: Shared Cloud track with user_id = NULL can be added by any user ──
+    console.log('4. Testing shared Cloud track with user_id = NULL can be added to playlists...');
+    const historicalCloudTrack = await db.insertTrack({
+      id: `trk_hist_cloud_${testRunId}`,
+      title: 'Historical Shared Cloud Track With Audio Key',
+      artist: 'Historical Artist',
       duration: 150,
-      audio_key: 'legacy/orphaned/audio.mp3',
+      audio_key: 'legacy/shared/audio.mp3',
       provider: 'local',
       user_id: null
     });
 
-    let orphanedAddBlocked = false;
+    const addHistA = await playlistDb.addTrackToPlaylist(plA.id, userA, historicalCloudTrack.id);
+    assert.ok(addHistA, 'User A should be able to add historical shared Cloud track with user_id=NULL');
+    assert.strictEqual(addHistA.track_id, historicalCloudTrack.id);
+
+    const addHistB = await playlistDb.addTrackToPlaylist(plB.id, userB, historicalCloudTrack.id);
+    assert.ok(addHistB, 'User B should be able to add historical shared Cloud track with user_id=NULL');
+    assert.strictEqual(addHistB.track_id, historicalCloudTrack.id);
+    console.log('   ✓ Shared Cloud track with user_id=NULL can be added to playlists by multiple users.');
+
+    // Local track with audio_key = NULL and user_id = NULL cannot be added (HTTP 404)
+    const invalidLocalTrack = await db.insertTrack({
+      id: `trk_invalid_no_audio_${testRunId}`,
+      title: 'Invalid Local Track Without Audio or User',
+      artist: 'Unknown',
+      duration: 100,
+      audio_key: null,
+      provider: 'local',
+      user_id: null
+    });
+
+    let invalidAddBlocked = false;
     try {
-      await playlistDb.addTrackToPlaylist(plA.id, userA, orphanedLocalTrack.id);
+      await playlistDb.addTrackToPlaylist(plA.id, userA, invalidLocalTrack.id);
     } catch (err) {
       if (err.status === 404) {
-        orphanedAddBlocked = true;
+        invalidAddBlocked = true;
       }
     }
-    assert.ok(orphanedAddBlocked, 'Orphaned local track with user_id=NULL must NOT be addable to playlists even with audio_key');
-    console.log('   ✓ Local track with user_id=NULL cannot be added even if audio_key exists (HTTP 404).\n');
+    assert.ok(invalidAddBlocked, 'Local track with user_id=NULL and audio_key=NULL must NOT be addable to playlists');
+    console.log('   ✓ Local track without audio_key and user_id=NULL cannot be added (HTTP 404).\n');
 
     // ── TEST 4: Canonical provider tracks (user_id = NULL) shared across users ──
     console.log('5. Testing canonical provider tracks (spotify, youtube, apple)...');
@@ -256,8 +277,8 @@ async function runRegression() {
 
     // Cleanup test data
     await db.pool.query('DELETE FROM playlists WHERE id IN ($1, $2, $3)', [plA.id, plB.id, plC.id]);
-    await db.pool.query('DELETE FROM tracks WHERE id IN ($1, $2, $3, $4, $5)', [
-      cloudTrackA.id, privateNoAudio.id, orphanedLocalTrack.id, spotifyTrack.id, trackToDelete.id
+    await db.pool.query('DELETE FROM tracks WHERE id IN ($1, $2, $3, $4, $5, $6)', [
+      cloudTrackA.id, privateNoAudio.id, historicalCloudTrack.id, invalidLocalTrack.id, spotifyTrack.id, trackToDelete.id
     ]);
     await db.pool.query('DELETE FROM users WHERE id IN ($1, $2, $3)', [userA, userB, userC]);
 

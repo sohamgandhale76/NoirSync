@@ -9,11 +9,10 @@ const { isCanonicalProvider } = require('../music/registry');
 /**
  * Check if a track is accessible to the requesting user for playlist operations.
  * - Authenticated users can access valid persistent Cloud/R2 tracks:
- *   (track.provider === 'local' && track.user_id != null && track.audio_key != null)
+ *   (track.provider === 'local' && track.audio_key != null) regardless of user_id.
  * - Requester-owned track (track.user_id === userId) -> accessible
  * - Canonical provider metadata record (isCanonicalProvider(track.provider)) -> accessible
  * - Published NoirSync public catalog track (noirsync_public && publication_status === 'published') -> accessible
- * - Legacy orphan local tracks (provider === 'local' && user_id === null) -> INACCESSIBLE even if audio_key exists!
  * - Another user's track with NO audio_key (user_id !== userId && !audio_key) -> INACCESSIBLE
  * 
  * @param {Object} track 
@@ -24,10 +23,9 @@ function isTrackAccessible(track, userId) {
   if (!track || !userId) return false;
 
   // 1. Authenticated users can access valid persistent Cloud/R2 tracks.
-  // Must be a local-provider track with persistent R2 audio (audio_key != null)
-  // and attributed to an uploader (user_id != null).
-  // Legacy orphan tracks (user_id == null) are strictly excluded even if audio_key exists!
-  if (track.provider === 'local' && track.user_id && track.audio_key) {
+  // Must be a local-provider track with persistent R2 audio (audio_key != null).
+  // user_id is optional attribution metadata, NOT an access gate.
+  if (track.provider === 'local' && track.audio_key) {
     return true;
   }
 
