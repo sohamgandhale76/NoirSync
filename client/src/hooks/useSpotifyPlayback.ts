@@ -31,6 +31,12 @@ export function useSpotifyPlayback() {
       if (res.ok) {
         const accounts = await res.json();
         const spotify = accounts.find((a: any) => a.provider === 'spotify' && a.connected);
+        console.info('[SpotifyPlaybackHook] /api/music/accounts response received:', {
+          accountsCount: accounts.length,
+          spotifyFound: Boolean(spotify),
+          providerAccountId: spotify?.providerAccountId,
+          displayName: spotify?.displayName,
+        });
         if (spotify) {
           setIsSpotifyConnected(true);
           setSpotifyAccount({

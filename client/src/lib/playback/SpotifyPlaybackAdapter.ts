@@ -77,12 +77,14 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
 
         // SDK Events
         this.player.addListener('ready', ({ device_id }: { device_id: string }) => {
+          console.info('[SpotifyAdapter] Player READY event received. deviceId:', device_id);
           this.deviceId = device_id;
           this.isPlayerReady = true;
           this.emit('canplay');
         });
 
-        this.player.addListener('not_ready', () => {
+        this.player.addListener('not_ready', ({ device_id }: { device_id?: string }) => {
+          console.warn('[SpotifyAdapter] Player NOT_READY event received. deviceId:', device_id);
           this.isPlayerReady = false;
           this.deviceId = null;
         });
@@ -123,15 +125,18 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
         });
 
         this.player.addListener('initialization_error', ({ message }: { message: string }) => {
+          console.error('[SpotifyAdapter] SDK initialization_error event:', message);
           this.emit('waiting', new Error(message));
         });
 
         this.player.addListener('authentication_error', ({ message }: { message: string }) => {
+          console.error('[SpotifyAdapter] SDK authentication_error event:', message);
           this.emit('waiting', new Error(message));
         });
 
         this.player.addListener('account_error', ({ message }: { message: string }) => {
-          this.emit('waiting', new Error(message));
+          console.error('[SpotifyAdapter] SDK account_error event (Spotify Premium check failed):', message);
+          this.emit('waiting', new Error(`Spotify Premium required: ${message}`));
         });
 
         await this.player.connect();

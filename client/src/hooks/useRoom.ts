@@ -182,6 +182,7 @@ export function useRoom(
     };
 
     const handleSyncSpotifyListeners = ({ listeners }: { listeners: SpotifyListenerInfo[] }) => {
+      console.info('[useRoom] sync:spotify_listeners received payload from server:', listeners);
       setRoomState((s) => ({ ...s, spotifyListeners: listeners }));
     };
 

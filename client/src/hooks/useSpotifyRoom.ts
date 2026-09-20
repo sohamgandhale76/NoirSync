@@ -34,18 +34,22 @@ export function useSpotifyRoom({
   // Check adapter readiness and subscribe to adapter events
   useEffect(() => {
     const handleCanPlay = () => {
+      console.info('[SpotifyRoom] Adapter canplay event -> setting isReady=true');
       setIsReady(true);
       setStatusMessage('Spotify Ready');
     };
 
     const handleWaiting = (err?: any) => {
+      console.warn('[SpotifyRoom] Adapter waiting event received with error:', err?.message);
       if (err?.message?.includes('Premium') || err?.message?.includes('403')) {
+        console.warn('[SpotifyRoom] Computed NoirSync isPremium transitioning to false. Reason:', err?.message);
         setIsPremium(false);
         setStatusMessage('Premium Required');
       }
     };
 
     const handlePlay = () => {
+      console.info('[SpotifyRoom] Adapter play event -> setting inSync=true');
       setInSync(true);
       setPlaybackBlocked(false);
     };
@@ -62,6 +66,7 @@ export function useSpotifyRoom({
     const unsubPause = adapter.on('pause', handlePause);
 
     if (adapter.isReady()) {
+      console.info('[SpotifyRoom] Adapter isReady() is true immediately upon subscription');
       setIsReady(true);
       setStatusMessage('Spotify Ready');
     }
@@ -93,13 +98,16 @@ export function useSpotifyRoom({
       status = 'syncing';
     }
 
-    emitListenerStatus({
+    const payload = {
       isConnected: isSpotifyConnected,
       isPremium,
       isReady,
       inSync,
       status,
-    });
+    };
+
+    console.info('[SpotifyRoom] Emitting listener status payload to room:', payload);
+    emitListenerStatus(payload);
   }, [emitListenerStatus, isSpotifyConnected, isPremium, isReady, inSync, playbackBlocked]);
 
   // Handle Room State synchronization for Spotify tracks

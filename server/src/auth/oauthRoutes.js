@@ -206,9 +206,21 @@ router.get('/callback/:provider', async (req, res) => {
       }
 
       const profile = await profileRes.json();
+      logger.info('[SpotifyOAuth] /v1/me profile received', {
+        userId,
+        providerAccountId: profile?.account_id || profile?.id,
+        spotifyUserId: profile?.id,
+        spotifyAccountId: profile?.account_id,
+        product: profile?.product,
+        requestedScopes: PROVIDERS.spotify.scopes,
+        country: profile?.country,
+        displayName: profile?.display_name,
+      });
+
       if (!profile || typeof profile !== 'object' || !profile.account_id) {
         logger.error('Spotify profile missing required immutable account_id', {
-          hasLegacyId: Boolean(profile && profile.id)
+          hasLegacyId: Boolean(profile && profile.id),
+          product: profile?.product,
         });
         const missingIdError = new Error('profile_fetch_failed');
         missingIdError.code = 'profile_fetch_failed';

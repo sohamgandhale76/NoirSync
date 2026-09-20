@@ -1062,19 +1062,23 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                           </div>
                           <div className="flex items-center gap-1">
                             {roomState.source === 'spotify' && (
-                              spotifyStatus?.inSync ? (
+                              !spotifyStatus ? (
+                                <span className="text-[8px] text-noir-ash bg-noir-graphite/60 px-1 py-0.5 rounded border border-noir-border/50" title="Connecting">
+                                  ⏳ Connecting
+                                </span>
+                              ) : spotifyStatus.inSync ? (
                                 <span className="text-[8px] text-[#1DB954] bg-[#1DB954]/15 px-1 py-0.5 rounded border border-[#1DB954]/30" title="In Sync">
                                   🟢 Sync
                                 </span>
-                              ) : spotifyStatus?.isReady ? (
+                              ) : spotifyStatus.isReady ? (
                                 <span className="text-[8px] text-amber-400 bg-amber-400/15 px-1 py-0.5 rounded border border-amber-400/30" title="Ready">
                                   🟡 Ready
                                 </span>
-                              ) : spotifyStatus?.isConnected === false ? (
+                              ) : spotifyStatus.isConnected === false ? (
                                 <span className="text-[8px] text-noir-dim bg-noir-graphite px-1 py-0.5 rounded border border-noir-border" title="Unlinked">
                                   ⚪ Unlinked
                                 </span>
-                              ) : !spotifyStatus?.isPremium ? (
+                              ) : (spotifyStatus.isPremium === false && spotifyStatus.isConnected === true) ? (
                                 <span className="text-[8px] text-red-400 bg-red-400/15 px-1 py-0.5 rounded border border-red-400/30" title="Non-Premium">
                                   ⚠️ Non-Prem
                                 </span>
@@ -1749,19 +1753,23 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                       </div>
                       <div className="flex items-center gap-1">
                         {roomState.source === 'spotify' && (
-                          spotifyStatus?.inSync ? (
+                          !spotifyStatus ? (
+                            <span className="text-[8px] text-noir-ash bg-noir-graphite/60 px-1 py-0.5 rounded border border-noir-border/50" title="Connecting">
+                              ⏳ Connecting
+                            </span>
+                          ) : spotifyStatus.inSync ? (
                             <span className="text-[8px] text-[#1DB954] bg-[#1DB954]/15 px-1 py-0.5 rounded border border-[#1DB954]/30" title="In Sync">
                               🟢 Sync
                             </span>
-                          ) : spotifyStatus?.isReady ? (
+                          ) : spotifyStatus.isReady ? (
                             <span className="text-[8px] text-amber-400 bg-amber-400/15 px-1 py-0.5 rounded border border-amber-400/30" title="Ready">
                               🟡 Ready
                             </span>
-                          ) : spotifyStatus?.isConnected === false ? (
+                          ) : spotifyStatus.isConnected === false ? (
                             <span className="text-[8px] text-noir-dim bg-noir-graphite px-1 py-0.5 rounded border border-noir-border" title="Unlinked">
                               ⚪ Unlinked
                             </span>
-                          ) : !spotifyStatus?.isPremium ? (
+                          ) : (spotifyStatus.isPremium === false && spotifyStatus.isConnected === true) ? (
                             <span className="text-[8px] text-red-400 bg-red-400/15 px-1 py-0.5 rounded border border-red-400/30" title="Non-Premium">
                               ⚠️ Non-Prem
                             </span>
