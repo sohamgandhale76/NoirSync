@@ -72,6 +72,13 @@ async function initDb() {
       )
     `);
 
+    // Idempotent migrations for connected_accounts
+    await pool.query(`ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS display_name TEXT`);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS connected_accounts_provider_provider_account_id_idx
+      ON connected_accounts (provider, provider_account_id)
+    `);
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS oauth_states (
         state TEXT PRIMARY KEY,

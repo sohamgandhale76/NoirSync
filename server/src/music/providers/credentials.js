@@ -72,8 +72,17 @@ async function getUserAccessToken(userId, provider) {
   }
 
   // Token is expired or expiring soon, try to refresh
-  const refreshToken = decrypt(account.refresh_token_enc);
+  let refreshToken;
+  try {
+    refreshToken = decrypt(account.refresh_token_enc);
+  } catch (err) {
+    logger.warn('Failed to decrypt refresh token; invalidating connected account', { accountId: account.id, provider });
+    await db.pool.query('DELETE FROM connected_accounts WHERE id = $1', [account.id]);
+    throw new Error('ProviderAuthenticationFailed');
+  }
+
   if (!refreshToken) {
+    await db.pool.query('DELETE FROM connected_accounts WHERE id = $1', [account.id]);
     throw new Error('ProviderTokenExpired');
   }
 

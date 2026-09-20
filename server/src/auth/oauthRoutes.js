@@ -16,12 +16,24 @@ const PROVIDERS = {
   }
 };
 
-const getRedirectUri = (req, provider) => {
-  // Determine absolute redirect URI
-  const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-  const host = req.headers.host;
+function getFrontendUrl() {
+  if (process.env.CLIENT_URL) {
+    return process.env.CLIENT_URL.replace(/\/+$/, '');
+  }
+  if (process.env.NODE_ENV === 'production' && process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== '*') {
+    return process.env.CORS_ORIGIN.replace(/\/+$/, '');
+  }
+  return 'http://localhost:5173';
+}
+
+function getRedirectUri(req, provider) {
+  if (process.env.SPOTIFY_REDIRECT_URI && provider === 'spotify') {
+    return process.env.SPOTIFY_REDIRECT_URI;
+  }
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const host = req.headers.host || 'localhost:3001';
   return `${protocol}://${host}/api/music/callback/${provider}`;
-};
+}
 
 // Start OAuth Flow
 router.get('/connect/:provider', async (req, res) => {
@@ -62,14 +74,16 @@ router.get('/callback/:provider', async (req, res) => {
   const provider = req.params.provider;
   const { code, state, error } = req.query;
   const userId = req.userId;
+  const frontendUrl = getFrontendUrl();
 
   if (error) {
-    logger.error(`OAuth callback error for ${provider}`, { error });
-    return res.redirect('/?error=provider_auth_failed');
+    logger.warn(`OAuth callback error from provider ${provider}`, { error });
+    const safeError = error === 'access_denied' ? 'access_denied' : 'provider_auth_failed';
+    return res.redirect(`${frontendUrl}/?spotify_error=${safeError}`);
   }
 
   if (!code || !state) {
-    return res.redirect('/?error=invalid_oauth_response');
+    return res.redirect(`${frontendUrl}/?spotify_error=invalid_state`);
   }
 
   // Validate state
@@ -80,7 +94,7 @@ router.get('/callback/:provider', async (req, res) => {
 
   if (stateResult.rows.length === 0) {
     logger.warn('Invalid OAuth state encountered', { userId, provider });
-    return res.redirect('/?error=invalid_state');
+    return res.redirect(`${frontendUrl}/?spotify_error=invalid_state`);
   }
 
   const stateRecord = stateResult.rows[0];
@@ -88,13 +102,13 @@ router.get('/callback/:provider', async (req, res) => {
   // Consume state immediately
   await db.pool.query('DELETE FROM oauth_states WHERE state = $1', [state]);
 
-  // Check expiration (e.g. 10 minutes)
+  // Check expiration (10 minutes)
   if (Date.now() - stateRecord.created_at > 10 * 60 * 1000) {
-    return res.redirect('/?error=state_expired');
+    return res.redirect(`${frontendUrl}/?spotify_error=state_expired`);
   }
 
   try {
-    let accessToken, refreshToken, expiresAt, providerAccountId;
+    let accessToken, refreshToken, expiresAt, providerAccountId, displayName;
 
     if (provider === 'spotify') {
       const clientId = process.env.SPOTIFY_CLIENT_ID;
@@ -118,7 +132,7 @@ router.get('/callback/:provider', async (req, res) => {
       });
 
       if (!tokenRes.ok) {
-        throw new Error(`Token exchange failed: ${tokenRes.status}`);
+        throw new Error('token_exchange_failed');
       }
 
       const tokenData = await tokenRes.json();
@@ -132,32 +146,50 @@ router.get('/callback/:provider', async (req, res) => {
       });
       
       if (!profileRes.ok) {
-        throw new Error('Failed to fetch provider profile');
+        throw new Error('profile_fetch_failed');
       }
 
       const profile = await profileRes.json();
       providerAccountId = profile.id;
+      displayName = profile.display_name || profile.id;
+    }
+
+    // Check if this provider account is already linked to another NoirSync user
+    const existingOther = await db.pool.query(
+      'SELECT user_id FROM connected_accounts WHERE provider = $1 AND provider_account_id = $2 AND user_id != $3',
+      [provider, providerAccountId, userId]
+    );
+
+    if (existingOther.rows.length > 0) {
+      logger.warn('Spotify account is already linked to another user', { provider, providerAccountId, currentUserId: userId });
+      return res.redirect(`${frontendUrl}/?spotify_error=account_already_linked`);
     }
 
     // Encrypt tokens and store connected account
     const id = uuidv4();
     await db.pool.query(
-      `INSERT INTO connected_accounts (id, user_id, provider, provider_account_id, access_token_enc, refresh_token_enc, expires_at, scopes, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO connected_accounts (id, user_id, provider, provider_account_id, display_name, access_token_enc, refresh_token_enc, expires_at, scopes, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT (user_id, provider) DO UPDATE SET
          provider_account_id = EXCLUDED.provider_account_id,
+         display_name = EXCLUDED.display_name,
          access_token_enc = EXCLUDED.access_token_enc,
          refresh_token_enc = EXCLUDED.refresh_token_enc,
          expires_at = EXCLUDED.expires_at,
          updated_at = EXCLUDED.updated_at`,
-      [id, userId, provider, providerAccountId, encrypt(accessToken), encrypt(refreshToken), expiresAt, PROVIDERS[provider].scopes, Date.now(), Date.now()]
+      [id, userId, provider, providerAccountId, displayName, encrypt(accessToken), encrypt(refreshToken), expiresAt, PROVIDERS[provider].scopes, Date.now(), Date.now()]
     );
 
-    logger.info('User successfully connected provider account', { userId, provider });
-    res.redirect('/');
+    logger.info('User successfully connected provider account', { userId, provider, providerAccountId });
+    res.redirect(`${frontendUrl}/?spotify_connected=true`);
   } catch (err) {
-    logger.error('OAuth token exchange error', { error: err.message, stack: err.stack });
-    res.redirect('/?error=token_exchange_failed');
+    if (err.code === '23505') {
+      logger.warn('Spotify account already linked (unique constraint violation)', { error: err.message });
+      return res.redirect(`${frontendUrl}/?spotify_error=account_already_linked`);
+    }
+    logger.error('OAuth token exchange error', { error: err.message });
+    const safeError = err.message === 'profile_fetch_failed' ? 'profile_fetch_failed' : 'token_exchange_failed';
+    res.redirect(`${frontendUrl}/?spotify_error=${safeError}`);
   }
 });
 
@@ -168,6 +200,7 @@ router.post('/disconnect/:provider', async (req, res) => {
   if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
   await db.pool.query('DELETE FROM connected_accounts WHERE user_id = $1 AND provider = $2', [userId, provider]);
+  logger.info('User disconnected provider account', { userId, provider });
   res.json({ success: true });
 });
 
@@ -176,12 +209,16 @@ router.get('/accounts', async (req, res) => {
   const userId = req.userId;
   if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
-  const result = await db.pool.query('SELECT provider, provider_account_id FROM connected_accounts WHERE user_id = $1', [userId]);
+  const result = await db.pool.query(
+    'SELECT provider, provider_account_id, display_name FROM connected_accounts WHERE user_id = $1',
+    [userId]
+  );
   
   const accounts = result.rows.map(row => ({
     provider: row.provider,
     connected: true,
-    providerAccountId: row.provider_account_id
+    providerAccountId: row.provider_account_id,
+    displayName: row.display_name || row.provider_account_id
   }));
 
   res.json(accounts);

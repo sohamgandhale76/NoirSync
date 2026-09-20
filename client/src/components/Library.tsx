@@ -4,6 +4,7 @@ import { AddToPlaylistModal } from './AddToPlaylistModal';
 import { GlassPanel } from './ui/GlassPanel';
 import { Spinner } from './ui/Spinner';
 import { useMusicSearch } from '../hooks/useMusicSearch';
+import { useSpotifyAuth } from '../hooks/useSpotifyAuth';
 import { ProviderTrack } from '../lib/music/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -664,9 +665,48 @@ function SpotifyDiscoveryView({
   onAddToPlaylist: (track: ProviderTrack) => void;
 }) {
   const { searchMusic, results, loading, error } = useMusicSearch();
+  const {
+    connected,
+    loading: authLoading,
+    providerAccountId,
+    displayName,
+    connect,
+    disconnect,
+  } = useSpotifyAuth();
+
   const [query, setQuery] = useState('');
   const [lastSearchedQuery, setLastSearchedQuery] = useState('');
   const [hasSearched, setHasSearched] = useState(false);
+  const [authNotice, setAuthNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const spotifyConnected = params.get('spotify_connected');
+    const spotifyError = params.get('spotify_error');
+
+    if (spotifyConnected === 'true') {
+      setAuthNotice({ type: 'success', message: 'Spotify account connected successfully!' });
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, document.title, cleanUrl);
+    } else if (spotifyError) {
+      const errorMap: Record<string, string> = {
+        invalid_state: 'Security verification failed (invalid state). Please try connecting again.',
+        state_expired: 'Connection session timed out. Please try connecting again.',
+        access_denied: 'Spotify connection was canceled.',
+        token_exchange_failed: 'Failed to complete authorization with Spotify.',
+        profile_fetch_failed: 'Failed to retrieve Spotify user profile.',
+        account_already_linked: 'This Spotify account is already linked to another NoirSync user.',
+        token_refresh_failed: 'Spotify authorization expired. Please reconnect your account.',
+        provider_unavailable: 'Spotify service is currently unavailable.',
+      };
+      setAuthNotice({
+        type: 'error',
+        message: errorMap[spotifyError] || `Spotify connection error: ${spotifyError}`,
+      });
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, document.title, cleanUrl);
+    }
+  }, []);
 
   const handleSearch = (searchQuery: string) => {
     const q = searchQuery.trim();
@@ -700,6 +740,86 @@ function SpotifyDiscoveryView({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+      {/* Account Connection Status Bar */}
+      <div className="p-3.5 sm:p-4 border-b border-noir-border/30 bg-noir-surface/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-8 h-8 rounded-lg bg-[#1db954]/10 border border-[#1db954]/30 flex items-center justify-center shrink-0">
+            <svg className="w-4 h-4 text-[#1db954]" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.503 17.308c-.216.354-.675.467-1.029.25-2.822-1.724-6.374-2.114-10.558-1.157-.403.093-.807-.16-.9-.562-.092-.403.16-.807.563-.9 4.582-1.047 8.513-.604 11.674 1.34.354.216.467.675.25 1.029zm1.47-3.268c-.272.443-.852.584-1.295.312-3.23-1.986-8.155-2.56-11.976-1.4-497.151-1.027-.133-1.178-.63-.151-.497.133-1.027.63-1.178 4.372-1.327 9.802-.682 13.507 1.59.443.272.585.852.312 1.295zm.126-3.411c-3.873-2.3-10.264-2.512-13.978-1.384-.593.18-1.223-.156-1.403-.75-.18-.593.156-1.223.75-1.403 4.269-1.296 11.328-1.05 15.772 1.587.534.316.71 1.008.393 1.542-.316.534-1.008.71-1.542.393z" />
+            </svg>
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-ui text-xs font-semibold text-noir-white">
+                {authLoading
+                  ? 'Checking Spotify Status...'
+                  : connected
+                  ? 'Spotify Connected'
+                  : 'Spotify Account'}
+              </span>
+              {connected && (
+                <span className="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase bg-[#1db954]/20 text-[#1db954] border border-[#1db954]/30 font-semibold">
+                  Linked
+                </span>
+              )}
+            </div>
+            <p className="font-ui text-[11px] text-noir-dim truncate mt-0.5">
+              {authLoading
+                ? 'Verifying account authorization...'
+                : connected
+                ? `Connected as: ${displayName || providerAccountId}`
+                : 'Connect your Spotify account to establish user authorization and identity.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {connected ? (
+            <button
+              type="button"
+              onClick={disconnect}
+              disabled={authLoading}
+              className="px-3 py-1.5 rounded-lg border border-noir-border/70 hover:border-red-500/40 text-noir-ash hover:text-red-400 hover:bg-red-500/5 font-ui text-xs transition-all cursor-pointer"
+            >
+              Disconnect
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={connect}
+              disabled={authLoading}
+              className="px-3.5 py-1.5 rounded-lg bg-[#1db954] hover:brightness-110 text-noir-black font-ui text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+            >
+              <span>Connect Spotify</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Auth Notification Toast / Banner */}
+      {authNotice && (
+        <div
+          className={`px-4 py-2.5 text-xs font-ui flex items-center justify-between shrink-0 ${
+            authNotice.type === 'success'
+              ? 'bg-[#1db954]/10 border-b border-[#1db954]/30 text-[#1db954]'
+              : 'bg-red-950/40 border-b border-red-900/50 text-red-300'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <span>{authNotice.type === 'success' ? '✓' : '⚠'}</span>
+            <span>{authNotice.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAuthNotice(null)}
+            className="text-noir-dim hover:text-noir-white transition-colors p-1"
+            title="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Search Bar & Chips Header */}
       <div className="p-4 sm:p-5 border-b border-noir-border/40 bg-noir-deep/30 shrink-0 space-y-3">
         <form onSubmit={handleSubmit} className="flex gap-2">
@@ -784,6 +904,25 @@ function SpotifyDiscoveryView({
               <p className="font-ui text-xs text-noir-silver leading-relaxed">
                 The configured Spotify application is running in Spotify Developer Mode. Under Spotify API policy, Development Mode requires the application owner to hold an active Spotify Premium subscription or whitelist user accounts in the Spotify Developer Dashboard.
               </p>
+              {connected ? (
+                <div className="p-3 rounded-lg bg-noir-graphite/60 border border-noir-border/50 font-ui text-xs text-noir-ash space-y-1">
+                  <p className="text-[#1db954] font-semibold">
+                    ✓ Spotify Account Linked: <span className="text-noir-white">{displayName || providerAccountId}</span>
+                  </p>
+                  <p className="text-[11px] text-noir-dim">
+                    User authorization succeeded. Note that application-level catalog search is subject to Spotify Development Mode restrictions.
+                  </p>
+                </div>
+              ) : (
+                <div className="p-3 rounded-lg bg-noir-graphite/60 border border-noir-border/50 font-ui text-xs text-noir-ash space-y-1">
+                  <p className="text-noir-white font-semibold">
+                    Account Linking:
+                  </p>
+                  <p className="text-[11px] text-noir-dim">
+                    You can connect your Spotify account above to establish user authorization and identity. Note that account linking establishes user authorization; it does not bypass Spotify's application-level Development Mode restrictions.
+                  </p>
+                </div>
+              )}
               <div className="p-3 rounded-lg bg-noir-graphite/60 border border-noir-border/50 font-mono text-[11px] text-noir-ash space-y-1">
                 <p className="text-accent-gold font-semibold uppercase tracking-wider">
                   Dev Tip:
