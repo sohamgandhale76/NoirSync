@@ -2,7 +2,7 @@
 // Caches the app shell for offline use.
 // Audio chunks are NOT cached (they're ephemeral streaming data).
 
-const CACHE_NAME = 'noirsync-shell-v1';
+const CACHE_NAME = 'noirsync-shell-v2';
 
 // App shell files to precache
 const SHELL_URLS = [
@@ -43,6 +43,11 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
+
+  // Never intercept cross-origin requests (e.g. Spotify SDK, CDN, Google Fonts, YouTube)
+  if (url.origin !== self.location.origin) {
+    return; // let browser handle external requests natively
+  }
 
   // Never intercept API, socket.io, or audio chunk requests
   if (
