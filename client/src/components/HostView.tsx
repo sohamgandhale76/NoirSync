@@ -318,6 +318,10 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
 
   const playTrack = useCallback(async (track: any) => {
     if (!adapter) return;
+    if (track.provider === 'spotify' || track.isPlayable === false) {
+      toast.error('Spotify tracks are metadata-only and cannot be played in room audio.');
+      return;
+    }
     
     // Reset state for new song
     setLyrics([]);
@@ -467,6 +471,10 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   }, [playTrack, toast]);
 
   const handleAddToQueue = useCallback((track: any) => {
+    if (track.provider === 'spotify' || track.isPlayable === false) {
+      toast.error('Spotify tracks are metadata-only and cannot be added to the queue.');
+      return;
+    }
     setQueue(prev => {
       const alreadyIn = prev.some(t => t.id === track.id);
       if (alreadyIn) {
@@ -479,8 +487,10 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   }, [toast]);
 
   const handleAddTracksToQueue = useCallback((newTracks: any[]) => {
+    const playable = newTracks.filter((t) => t.provider !== 'spotify' && t.isPlayable !== false);
+    if (playable.length === 0) return;
     setQueue(prev => {
-      const filtered = newTracks.filter(nt => !prev.some(pt => pt.id === nt.id));
+      const filtered = playable.filter(nt => !prev.some(pt => pt.id === nt.id));
       if (filtered.length === 0) {
         toast.success('All songs are already in the queue');
         return prev;
@@ -514,6 +524,10 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
 
   // ── Playlist Handlers: Play, Queue, and Load Playlist to Room Queue ─────────
   const handlePlaylistPlayTrack = useCallback((track: any) => {
+    if (track.provider === 'spotify' || track.isPlayable === false) {
+      toast.error('Spotify tracks are metadata-only and cannot be played in room audio.');
+      return;
+    }
     setShowR2Library(false);
     const format = (track.format || 'mp3').toLowerCase();
     const mimeType = format === 'flac' ? 'audio/flac' :
@@ -530,9 +544,13 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
       coverFilename,
     });
     setActiveTab('player');
-  }, [playTrack]);
+  }, [playTrack, toast]);
 
   const handlePlaylistAddToQueue = useCallback((track: any) => {
+    if (track.provider === 'spotify' || track.isPlayable === false) {
+      toast.error('Spotify tracks are metadata-only and cannot be added to the room queue.');
+      return;
+    }
     const format = (track.format || 'mp3').toLowerCase();
     const mimeType = format === 'flac' ? 'audio/flac' :
                      format === 'wav'  ? 'audio/wav'  :
@@ -547,11 +565,21 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
       mimeType,
       coverFilename,
     });
-  }, [handleAddToQueue]);
+  }, [handleAddToQueue, toast]);
 
   const handlePlaylistLoadToQueue = useCallback((tracksToLoad: any[]) => {
     if (!tracksToLoad || tracksToLoad.length === 0) return;
-    const normalizedTracks = tracksToLoad.map((track) => {
+    const playable = tracksToLoad.filter(
+      (track) => track.provider !== 'spotify' && track.isPlayable !== false
+    );
+    if (playable.length === 0) {
+      toast.error('No playable audio tracks in playlist (Spotify tracks are metadata-only).');
+      return;
+    }
+    if (playable.length < tracksToLoad.length) {
+      toast.info(`Loaded ${playable.length} playable track(s) to queue (Spotify tracks skipped).`);
+    }
+    const normalizedTracks = playable.map((track) => {
       const format = (track.format || 'mp3').toLowerCase();
       const mimeType = format === 'flac' ? 'audio/flac' :
                        format === 'wav'  ? 'audio/wav'  :
@@ -569,7 +597,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     });
     handleAddTracksToQueue(normalizedTracks);
     setShowR2Library(false);
-  }, [handleAddTracksToQueue]);
+  }, [handleAddTracksToQueue, toast]);
 
   // Callbacks are implemented above
 

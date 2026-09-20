@@ -1,6 +1,16 @@
 const BaseAdapter = require('./baseAdapter');
 const { getSpotifyClientCredentialsToken } = require('./credentials');
-const { ProviderNotConfiguredError } = require('../types');
+const {
+  ProviderError,
+  ProviderNotConfiguredError,
+  ProviderUnavailableError,
+  ProviderTrackNotFoundError
+} = require('../types');
+const {
+  isDevFixturesEnabled,
+  searchDevFixtures,
+  getDevFixtureTrack
+} = require('./fixtures');
 const logger = require('../../logger');
 
 class SpotifyAdapter extends BaseAdapter {
@@ -22,11 +32,11 @@ class SpotifyAdapter extends BaseAdapter {
 
     if (!res.ok) {
       const status = res.status;
-      if (status === 401) throw new Error('ProviderAuthenticationFailed');
-      if (status === 403) throw new Error('ProviderAuthenticationFailed');
-      if (status === 404) throw new Error('ProviderTrackNotFound');
-      if (status === 429) throw new Error('ProviderRateLimited');
-      throw new Error(`ProviderUnavailable: ${status}`);
+      if (status === 401) throw new ProviderUnavailableError(this.provider, 'Spotify authentication failed. Please check credentials.');
+      if (status === 403) throw new ProviderUnavailableError(this.provider, 'Spotify Development Mode requires a Premium account or whitelisted user.');
+      if (status === 404) throw new ProviderTrackNotFoundError(this.provider, endpoint);
+      if (status === 429) throw new ProviderUnavailableError(this.provider, 'Spotify rate limit exceeded.');
+      throw new ProviderUnavailableError(this.provider, `HTTP ${status}`);
     }
 
     return await res.json();
@@ -48,6 +58,10 @@ class SpotifyAdapter extends BaseAdapter {
   }
 
   async search(query) {
+    if (isDevFixturesEnabled()) {
+      return searchDevFixtures(query);
+    }
+
     try {
       const params = new URLSearchParams({
         q: query,
@@ -63,18 +77,42 @@ class SpotifyAdapter extends BaseAdapter {
       if (err.message === 'Spotify API credentials are not configured') {
         throw new ProviderNotConfiguredError(this.provider);
       }
+      if (err.message === 'ProviderAuthenticationFailed') {
+        throw new ProviderUnavailableError(this.provider, 'Spotify authentication failed. Please check credentials.');
+      }
+      if (err.message === 'ProviderRateLimited') {
+        throw new ProviderUnavailableError(this.provider, 'Spotify rate limit exceeded.');
+      }
+      if (err instanceof ProviderError) {
+        throw err;
+      }
       logger.error('Spotify API search error', { query, error: err.message });
       throw err;
     }
   }
 
   async getTrack(providerTrackId) {
+    if (isDevFixturesEnabled()) {
+      const fixture = getDevFixtureTrack(providerTrackId);
+      if (fixture) return fixture;
+      throw new ProviderTrackNotFoundError(this.provider, providerTrackId);
+    }
+
     try {
       const track = await this._fetch(`/tracks/${providerTrackId}`);
       return this._normalizeTrack(track);
     } catch (err) {
       if (err.message === 'Spotify API credentials are not configured') {
         throw new ProviderNotConfiguredError(this.provider);
+      }
+      if (err.message === 'ProviderAuthenticationFailed') {
+        throw new ProviderUnavailableError(this.provider, 'Spotify authentication failed. Please check credentials.');
+      }
+      if (err.message === 'ProviderRateLimited') {
+        throw new ProviderUnavailableError(this.provider, 'Spotify rate limit exceeded.');
+      }
+      if (err instanceof ProviderError) {
+        throw err;
       }
       logger.error('Spotify API getTrack error', { providerTrackId, error: err.message });
       throw err;

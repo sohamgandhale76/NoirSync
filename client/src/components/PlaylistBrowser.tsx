@@ -188,8 +188,13 @@ export function PlaylistBrowser({
 
   const handleLoadToRoomQueue = () => {
     if (!activePlaylist || !activePlaylist.tracks || activePlaylist.tracks.length === 0) return;
+    // Filter out non-playable / Spotify tracks so they never enter the active playable room queue
+    const playableTracks = activePlaylist.tracks.filter(
+      (t) => t.provider !== 'spotify' && t.isPlayable !== false
+    );
+    if (playableTracks.length === 0) return;
     if (onLoadPlaylistToRoomQueue) {
-      onLoadPlaylistToRoomQueue(activePlaylist.tracks);
+      onLoadPlaylistToRoomQueue(playableTracks);
     }
   };
 
@@ -341,7 +346,7 @@ export function PlaylistBrowser({
 
               {/* Actions */}
               <div className="flex items-center gap-2 shrink-0">
-                {isHost && activePlaylist.tracks && activePlaylist.tracks.length > 0 && (
+                {isHost && activePlaylist.tracks && activePlaylist.tracks.some((t) => t.provider !== 'spotify' && t.isPlayable !== false) && (
                   <Button
                     variant="gold"
                     size="sm"
@@ -412,6 +417,11 @@ export function PlaylistBrowser({
                             {track.title}
                           </span>
                           <ProviderBadge provider={track.provider} />
+                          {track.provider === 'spotify' && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-mono tracking-wider font-semibold uppercase bg-noir-graphite/60 text-noir-ash border border-noir-border/50">
+                              Metadata Only
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs text-noir-ash truncate mt-0.5 flex items-center gap-2">
                           <span>{track.artist || 'Unknown Artist'}</span>
@@ -425,34 +435,53 @@ export function PlaylistBrowser({
                       </div>
                     </div>
 
-                    {/* Right: Duration, Play / Queue, Remove */}
+                    {/* Right: Duration, Play / Queue / Open in Spotify, Remove */}
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="text-xs font-mono text-noir-ash pr-2">
                         {fmtDuration(track.duration)}
                       </span>
 
-                      {onPlayTrack && (
-                        <button
-                          onClick={() => onPlayTrack(track)}
-                          className="p-1.5 rounded-lg text-noir-ash hover:text-noir-gold hover:bg-noir-graphite transition-all"
-                          title="Play track"
-                        >
-                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M8 5v14l11-7z" />
-                          </svg>
-                        </button>
-                      )}
+                      {track.provider === 'spotify' ? (
+                        track.external_url ? (
+                          <a
+                            href={track.external_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-2.5 py-1 rounded-lg text-xs font-mono text-[#1db954] hover:bg-[#1db954]/10 border border-[#1db954]/30 flex items-center gap-1.5 transition-all"
+                            title="Open in Spotify"
+                          >
+                            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                              <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.503 17.308c-.216.354-.675.467-1.029.25-2.822-1.724-6.374-2.114-10.558-1.157-.403.093-.807-.16-.9-.562-.092-.403.16-.807.563-.9 4.582-1.047 8.513-.604 11.674 1.34.354.216.467.675.25 1.029zm1.47-3.268c-.272.443-.852.584-1.295.312-3.23-1.986-8.155-2.56-11.976-1.4-497.151-1.027-.133-1.178-.63-.151-.497.133-1.027.63-1.178 4.372-1.327 9.802-.682 13.507 1.59.443.272.585.852.312 1.295zm.126-3.411c-3.873-2.3-10.264-2.512-13.978-1.384-.593.18-1.223-.156-1.403-.75-.18-.593.156-1.223.75-1.403 4.269-1.296 11.328-1.05 15.772 1.587.534.316.71 1.008.393 1.542-.316.534-1.008.71-1.542.393z"/>
+                            </svg>
+                            <span>Spotify</span>
+                          </a>
+                        ) : null
+                      ) : (
+                        <>
+                          {onPlayTrack && (
+                            <button
+                              onClick={() => onPlayTrack(track)}
+                              className="p-1.5 rounded-lg text-noir-ash hover:text-noir-gold hover:bg-noir-graphite transition-all"
+                              title="Play track"
+                            >
+                              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M8 5v14l11-7z" />
+                              </svg>
+                            </button>
+                          )}
 
-                      {onAddToQueue && (
-                        <button
-                          onClick={() => onAddToQueue(track)}
-                          className="p-1.5 rounded-lg text-noir-ash hover:text-noir-white hover:bg-noir-graphite transition-all"
-                          title="Add to queue"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                          </svg>
-                        </button>
+                          {onAddToQueue && (
+                            <button
+                              onClick={() => onAddToQueue(track)}
+                              className="p-1.5 rounded-lg text-noir-ash hover:text-noir-white hover:bg-noir-graphite transition-all"
+                              title="Add to queue"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                              </svg>
+                            </button>
+                          )}
+                        </>
                       )}
 
                       <button

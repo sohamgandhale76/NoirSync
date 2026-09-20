@@ -27,7 +27,7 @@ export interface UniversalTrack extends Track {
     isPlayable?: boolean;
 }
 
-export interface PlaylistTrack extends Track {
+export interface PlaylistTrack extends UniversalTrack {
     playlist_track_id: string;
     position: number;
     added_at: number;

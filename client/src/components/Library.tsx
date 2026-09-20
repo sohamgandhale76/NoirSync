@@ -3,6 +3,8 @@ import { SERVER_URL } from '../lib/constants';
 import { AddToPlaylistModal } from './AddToPlaylistModal';
 import { GlassPanel } from './ui/GlassPanel';
 import { Spinner } from './ui/Spinner';
+import { useMusicSearch } from '../hooks/useMusicSearch';
+import { ProviderTrack } from '../lib/music/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -561,9 +563,326 @@ function UploadSidebar({ onUploaded, isFull }: { onUploaded: () => void; isFull:
   );
 }
 
+// ─── Spotify Track Card ───────────────────────────────────────────────────────
+
+function SpotifyTrackCard({
+  track,
+  onAddToPlaylist,
+}: {
+  track: ProviderTrack;
+  onAddToPlaylist: (track: ProviderTrack) => void;
+}) {
+  return (
+    <GlassPanel className="p-3 sm:p-3.5 rounded-xl border border-noir-border/50 hover:border-noir-border bg-noir-charcoal/30 hover:bg-noir-charcoal/60 transition-all duration-200 flex items-center gap-3 sm:gap-3.5 group relative">
+      {/* Cover */}
+      <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 flex items-center justify-center relative shadow-sm">
+        {track.coverUrl ? (
+          <img
+            src={track.coverUrl}
+            alt={track.title}
+            className="w-full h-full object-cover"
+            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+          />
+        ) : (
+          <span className="text-xl opacity-35 text-[#1db954]">🎵</span>
+        )}
+      </div>
+
+      {/* Metadata */}
+      <div className="flex-1 min-w-0">
+        <p className="font-ui text-sm font-semibold text-noir-white truncate" title={track.title}>
+          {track.title}
+        </p>
+        <p className="font-ui text-xs text-noir-ash truncate mt-0.5" title={track.artist}>
+          {track.artist}
+        </p>
+        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+          <span className="px-2 py-0.5 rounded-full text-[9px] font-mono tracking-wider font-semibold uppercase bg-[#1db954]/10 text-[#1db954] border border-[#1db954]/30">
+            Spotify
+          </span>
+          <span className="px-2 py-0.5 rounded-full text-[9px] font-mono tracking-wider font-semibold uppercase bg-noir-graphite/60 text-noir-ash border border-noir-border/50">
+            Metadata Only
+          </span>
+          {track.album && (
+            <span className="font-mono text-[10px] text-noir-dim truncate max-w-[150px]" title={track.album}>
+              {track.album}
+            </span>
+          )}
+          {track.duration !== undefined && track.duration !== null && (
+            <span className="font-mono text-[10px] text-noir-dim">
+              {fmtDuration(track.duration)}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Actions: Add to Playlist, Open in Spotify */}
+      <div className="flex items-center gap-2 shrink-0">
+        <button
+          onClick={() => onAddToPlaylist(track)}
+          title="Add to Playlist"
+          className="btn-noir h-8 px-2.5 sm:px-3 rounded-lg text-xs font-ui font-medium border border-noir-border hover:border-accent-gold/50 text-accent-gold hover:bg-accent-gold/10 flex items-center gap-1.5 transition-all cursor-pointer"
+        >
+          <span>📋</span>
+          <span className="hidden sm:inline">Add to Playlist</span>
+        </button>
+
+        {track.externalUrl && (
+          <a
+            href={track.externalUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open in Spotify"
+            className="btn-noir h-8 px-2.5 sm:px-3 rounded-lg text-xs font-ui font-medium border border-[#1db954]/30 text-[#1db954] hover:bg-[#1db954]/10 flex items-center gap-1.5 transition-all"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.503 17.308c-.216.354-.675.467-1.029.25-2.822-1.724-6.374-2.114-10.558-1.157-.403.093-.807-.16-.9-.562-.092-.403.16-.807.563-.9 4.582-1.047 8.513-.604 11.674 1.34.354.216.467.675.25 1.029zm1.47-3.268c-.272.443-.852.584-1.295.312-3.23-1.986-8.155-2.56-11.976-1.4-497.151-1.027-.133-1.178-.63-.151-.497.133-1.027.63-1.178 4.372-1.327 9.802-.682 13.507 1.59.443.272.585.852.312 1.295zm.126-3.411c-3.873-2.3-10.264-2.512-13.978-1.384-.593.18-1.223-.156-1.403-.75-.18-.593.156-1.223.75-1.403 4.269-1.296 11.328-1.05 15.772 1.587.534.316.71 1.008.393 1.542-.316.534-1.008.71-1.542.393z"/>
+            </svg>
+            <span className="hidden sm:inline">Spotify</span>
+          </a>
+        )}
+      </div>
+    </GlassPanel>
+  );
+}
+
+// ─── Spotify Discovery View ───────────────────────────────────────────────────
+
+const QUICK_SEARCH_CHIPS = [
+  'The Weeknd',
+  'Daft Punk',
+  'Synthwave',
+  'Cyberpunk 2077',
+  'Kavinsky',
+  'Lofi Beats',
+  'Hans Zimmer',
+];
+
+function SpotifyDiscoveryView({
+  onAddToPlaylist,
+}: {
+  onAddToPlaylist: (track: ProviderTrack) => void;
+}) {
+  const { searchMusic, results, loading, error } = useMusicSearch();
+  const [query, setQuery] = useState('');
+  const [lastSearchedQuery, setLastSearchedQuery] = useState('');
+  const [hasSearched, setHasSearched] = useState(false);
+
+  const handleSearch = (searchQuery: string) => {
+    const q = searchQuery.trim();
+    if (!q) return;
+    setLastSearchedQuery(q);
+    setHasSearched(true);
+    searchMusic(q, { provider: 'spotify' });
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    handleSearch(query);
+  };
+
+  const handleChipClick = (chip: string) => {
+    setQuery(chip);
+    handleSearch(chip);
+  };
+
+  const spotifyResult = results.find((r) => r.provider === 'spotify');
+
+  const isDevMode403 =
+    spotifyResult?.status === 'unavailable' &&
+    (spotifyResult.error?.toLowerCase().includes('development mode') ||
+      spotifyResult.error?.toLowerCase().includes('premium') ||
+      spotifyResult.error?.includes('403'));
+
+  const isNotConfigured =
+    spotifyResult?.status === 'unavailable' &&
+    spotifyResult.error?.toLowerCase().includes('not configured');
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+      {/* Search Bar & Chips Header */}
+      <div className="p-4 sm:p-5 border-b border-noir-border/40 bg-noir-deep/30 shrink-0 space-y-3">
+        <form onSubmit={handleSubmit} className="flex gap-2">
+          <div className="relative flex-1">
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-noir-dim text-sm pointer-events-none">
+              🔍
+            </span>
+            <input
+              type="text"
+              placeholder="Search Spotify by track, artist, or album..."
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="w-full bg-noir-graphite border border-noir-border text-noir-white pl-10 pr-10 py-2.5 rounded-lg font-ui text-sm focus:outline-none focus:border-[#1db954]/60 focus:ring-2 focus:ring-[#1db954]/20 transition-all placeholder:text-noir-dim"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-noir-dim hover:text-noir-white transition-colors p-1"
+                title="Clear search"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+          <button
+            type="submit"
+            disabled={loading || !query.trim()}
+            className={`px-4 sm:px-5 py-2.5 rounded-lg font-ui text-xs font-semibold uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer ${
+              loading || !query.trim()
+                ? 'bg-noir-graphite border border-noir-border text-noir-dim cursor-not-allowed opacity-60'
+                : 'bg-[#1db954] text-noir-black hover:brightness-110 shadow-sm font-semibold'
+            }`}
+          >
+            {loading ? <Spinner size="sm" /> : <span>Search</span>}
+          </button>
+        </form>
+
+        {/* Quick Search Chips */}
+        <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs custom-scrollbar">
+          <span className="text-noir-dim font-mono text-[10px] uppercase shrink-0">
+            Quick:
+          </span>
+          {QUICK_SEARCH_CHIPS.map((chip) => (
+            <button
+              key={chip}
+              type="button"
+              onClick={() => handleChipClick(chip)}
+              className="px-2.5 py-1 rounded-full bg-noir-graphite/70 border border-noir-border/50 text-noir-ash hover:text-noir-white hover:border-[#1db954]/50 hover:bg-[#1db954]/10 transition-all text-xs shrink-0 cursor-pointer"
+            >
+              {chip}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Results / Feedback Area */}
+      <div className="flex-1 overflow-y-auto p-4 sm:p-5">
+        {loading ? (
+          <div className="flex flex-col items-center justify-center py-20 gap-4">
+            <Spinner size="lg" />
+            <p className="font-mono text-xs text-[#1db954] tracking-widest uppercase animate-pulse">
+              Searching Spotify Catalog...
+            </p>
+          </div>
+        ) : error ? (
+          <div className="p-4 rounded-xl bg-red-950/30 border border-red-900/50 text-red-400 space-y-2">
+            <p className="font-ui text-sm font-semibold flex items-center gap-2">
+              <span>⚠</span> Search Error
+            </p>
+            <p className="font-ui text-xs text-red-300">{error}</p>
+          </div>
+        ) : spotifyResult?.status === 'unavailable' ? (
+          isDevMode403 ? (
+            <GlassPanel className="p-6 rounded-2xl border border-amber-500/30 bg-amber-500/[0.04] space-y-3">
+              <div className="flex items-center gap-2.5 text-amber-400">
+                <span className="text-xl">⚠️</span>
+                <h4 className="font-display text-base font-semibold">
+                  Spotify Development Mode Restriction
+                </h4>
+              </div>
+              <p className="font-ui text-xs text-noir-silver leading-relaxed">
+                The configured Spotify application is running in Spotify Developer Mode. Under Spotify API policy, Development Mode requires the application owner to hold an active Spotify Premium subscription or whitelist user accounts in the Spotify Developer Dashboard.
+              </p>
+              <div className="p-3 rounded-lg bg-noir-graphite/60 border border-noir-border/50 font-mono text-[11px] text-noir-ash space-y-1">
+                <p className="text-accent-gold font-semibold uppercase tracking-wider">
+                  Dev Tip:
+                </p>
+                <p>
+                  To test Spotify discovery locally with verified metadata fixtures, launch the server with:
+                </p>
+                <p className="text-noir-white font-semibold">SPOTIFY_DEV_FIXTURES=true</p>
+              </div>
+            </GlassPanel>
+          ) : isNotConfigured ? (
+            <GlassPanel className="p-6 rounded-2xl border border-noir-border/60 bg-noir-surface/40 space-y-3">
+              <div className="flex items-center gap-2.5 text-noir-gold">
+                <span className="text-xl">⚙</span>
+                <h4 className="font-display text-base font-semibold">
+                  Spotify Credentials Not Configured
+                </h4>
+              </div>
+              <p className="font-ui text-xs text-noir-silver leading-relaxed">
+                Spotify API credentials (<code className="text-accent-gold">SPOTIFY_CLIENT_ID</code> and <code className="text-accent-gold">SPOTIFY_CLIENT_SECRET</code>) are not configured on this server.
+              </p>
+            </GlassPanel>
+          ) : (
+            <GlassPanel className="p-6 rounded-2xl border border-red-500/30 bg-red-500/[0.04] space-y-2">
+              <p className="font-ui text-sm font-semibold text-red-400 flex items-center gap-2">
+                <span>⚠</span> Spotify Provider Unavailable
+              </p>
+              <p className="font-ui text-xs text-noir-silver">
+                {spotifyResult.error || 'The Spotify provider is currently unavailable.'}
+              </p>
+            </GlassPanel>
+          )
+        ) : !hasSearched ? (
+          <div className="flex flex-col items-center justify-center py-20 gap-3 border border-dashed border-noir-border/60 rounded-2xl text-center max-w-lg mx-auto">
+            <div className="w-14 h-14 rounded-full bg-[#1db954]/10 border border-[#1db954]/30 flex items-center justify-center text-2xl text-[#1db954]">
+              🟢
+            </div>
+            <h3 className="font-display text-lg text-noir-white font-semibold mt-1">
+              Discover Spotify Metadata
+            </h3>
+            <p className="font-ui text-xs text-noir-ash max-w-sm">
+              Search millions of tracks on Spotify. View verified metadata, artists, and album art, and add tracks to your NoirSync playlists.
+            </p>
+            <div className="mt-2 px-3 py-1 rounded-full bg-noir-graphite/60 border border-noir-border/40 text-[10px] font-mono text-noir-dim">
+              Spotify tracks are metadata-only (no direct playback)
+            </div>
+          </div>
+        ) : spotifyResult?.results.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 gap-3 border border-dashed border-noir-border rounded-xl text-center">
+            <p className="text-4xl opacity-20 text-[#1db954]">🔍</p>
+            <p className="font-display text-lg text-noir-ash">
+              No tracks found on Spotify
+            </p>
+            <p className="font-ui text-xs text-noir-dim max-w-sm">
+              No matches found for &ldquo;{lastSearchedQuery}&rdquo;. Try checking the spelling or search for another song or artist.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between pb-1 text-xs font-mono text-noir-dim">
+              <span>
+                Found {spotifyResult?.results.length} track{spotifyResult?.results.length === 1 ? '' : 's'} on Spotify
+              </span>
+              <span className="text-[#1db954] flex items-center gap-1">
+                <span>●</span> Connected to Spotify Search
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-2.5">
+              {spotifyResult?.results.map((track) => (
+                <SpotifyTrackCard
+                  key={track.providerTrackId}
+                  track={track}
+                  onAddToPlaylist={onAddToPlaylist}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Library Component ───────────────────────────────────────────────────
 
+interface ModalTrackData {
+  id?: string;
+  title: string;
+  artist?: string | null;
+  album?: string | null;
+  duration?: number;
+  provider?: string;
+  provider_track_id?: string | null;
+  cover_key?: string | null;
+  external_url?: string | null;
+}
+
 export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
+  const [libraryTab, setLibraryTab] = useState<'cloud' | 'spotify'>('cloud');
   const [tracks, setTracks] = useState<R2Track[]>([]);
   const [storage, setStorage] = useState<StorageStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -571,7 +890,7 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
   const [search, setSearch] = useState('');
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [loadingTrackId, setLoadingTrackId] = useState<string | null>(null);
-  const [playlistModalTrack, setPlaylistModalTrack] = useState<R2Track | null>(null);
+  const [playlistModalTrack, setPlaylistModalTrack] = useState<ModalTrackData | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const base = SERVER_URL || '';
 
@@ -657,6 +976,31 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
 
   const handleUploaded = useCallback(() => { fetchTracks(); fetchStorage(); }, [fetchTracks, fetchStorage]);
 
+  const handleR2AddToPlaylist = useCallback((track: R2Track) => {
+    setPlaylistModalTrack({
+      id: track.id,
+      title: track.title,
+      artist: track.artist,
+      album: 'Cloud Library',
+      duration: track.duration ?? undefined,
+      provider: 'local',
+      cover_key: track.cover_key,
+    });
+  }, []);
+
+  const handleSpotifyAddToPlaylist = useCallback((track: ProviderTrack) => {
+    setPlaylistModalTrack({
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      duration: track.duration,
+      provider: 'spotify',
+      provider_track_id: track.providerTrackId,
+      cover_key: track.coverUrl,
+      external_url: track.externalUrl,
+    });
+  }, []);
+
   const filtered = tracks.filter((t) => {
     const q = search.toLowerCase();
     return (t.title || '').toLowerCase().includes(q) || (t.artist || '').toLowerCase().includes(q);
@@ -671,111 +1015,143 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
       <audio ref={audioRef} onEnded={() => setPlayingId(null)} className="hidden" />
 
       <div className="flex flex-col h-full bg-noir-black text-noir-white font-ui">
-        {/* Storage Bar */}
-        <StorageBar storage={storage} />
+        {/* Mode Switcher: Cloud Tracks vs Spotify Discovery */}
+        <div className="border-b border-noir-border/50 bg-noir-deep/60 px-4 sm:px-6 py-2.5 flex items-center justify-between gap-4 shrink-0">
+          <div className="flex bg-noir-graphite/40 border border-noir-border/40 p-1 rounded-xl shrink-0">
+            <button
+              onClick={() => setLibraryTab('cloud')}
+              className={`px-4 py-1.5 rounded-lg font-mono text-[11px] font-semibold uppercase tracking-wider transition-all cursor-pointer flex items-center gap-2 ${
+                libraryTab === 'cloud'
+                  ? 'bg-accent-gold/15 text-accent-gold border border-accent-gold/30 shadow-sm'
+                  : 'text-noir-dim hover:text-noir-white border border-transparent'
+              }`}
+            >
+              <span>☁</span>
+              <span>Cloud Tracks</span>
+            </button>
+            <button
+              onClick={() => setLibraryTab('spotify')}
+              className={`px-4 py-1.5 rounded-lg font-mono text-[11px] font-semibold uppercase tracking-wider transition-all cursor-pointer flex items-center gap-2 ${
+                libraryTab === 'spotify'
+                  ? 'bg-[#1db954]/15 text-[#1db954] border border-[#1db954]/30 shadow-sm'
+                  : 'text-noir-dim hover:text-noir-white border border-transparent'
+              }`}
+            >
+              <span className="text-[#1db954]">🟢</span>
+              <span>Spotify Discovery</span>
+            </button>
+          </div>
+          {libraryTab === 'spotify' && (
+            <span className="font-mono text-[10px] text-noir-dim uppercase tracking-wider hidden sm:inline">
+              Metadata & Playlist Discovery Only
+            </span>
+          )}
+        </div>
 
-        {/* Main 2-col split */}
-        <div className="flex flex-col lg:flex-row flex-1 overflow-hidden min-h-0">
+        {libraryTab === 'cloud' ? (
+          <>
+            {/* Storage Bar */}
+            <StorageBar storage={storage} />
 
-          {/* ── Left: Track list ── */}
-          <div className="flex-1 lg:max-w-[65%] xl:max-w-[68%] overflow-y-auto border-b lg:border-b-0 lg:border-r border-noir-border/40 flex flex-col min-h-0">
-            {/* Search bar */}
-            <div className="p-4 sm:p-5 border-b border-noir-border/40 shrink-0">
-              <div className="relative w-full">
-                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-noir-dim text-sm pointer-events-none">
-                  🔍
-                </span>
-                <input
-                  type="text"
-                  placeholder="Search tracks by title or artist…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="w-full bg-noir-graphite border border-noir-border text-noir-white pl-10 pr-10 py-2.5 rounded-lg font-ui text-sm focus:outline-none focus:border-accent-gold/60 focus:ring-2 focus:ring-accent-gold/20 transition-all placeholder:text-noir-dim"
-                />
-                {search && (
-                  <button
-                    onClick={() => setSearch('')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-noir-dim hover:text-noir-white transition-colors p-1"
-                    title="Clear search"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-            </div>
+            {/* Main 2-col split */}
+            <div className="flex flex-col lg:flex-row flex-1 overflow-hidden min-h-0">
 
-            {/* Error banner */}
-            {error && (
-              <div className="m-4 p-4 rounded-lg bg-red-950/20 border border-red-900/50 text-red-400 font-ui text-sm flex justify-between items-center shrink-0">
-                <span>{error}</span>
-                <button onClick={() => setError(null)} className="text-red-400 hover:text-red-200 transition-colors p-1">
-                  ✕
-                </button>
-              </div>
-            )}
-
-            {/* Track list body */}
-            <div className="flex-1 overflow-y-auto p-4 sm:p-5">
-              {loading ? (
-                <div className="flex flex-col items-center justify-center py-20 gap-4">
-                  <Spinner size="lg" />
-                  <p className="font-mono text-xs text-noir-dim tracking-widest uppercase">
-                    Loading Cloud Library...
-                  </p>
-                </div>
-              ) : filtered.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-20 gap-3 border border-dashed border-noir-border rounded-xl">
-                  <p className="text-4xl opacity-20 text-accent-gold">☁</p>
-                  <p className="font-display text-lg text-noir-ash">
-                    {search ? 'No tracks found' : 'Cloud library is empty'}
-                  </p>
-                  <p className="font-ui text-xs text-noir-dim">
-                    {search ? 'Try a different search keyword' : 'Upload a track using the form on the right →'}
-                  </p>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-3">
-                  {filtered.map((track) => (
-                    <TrackCard
-                      key={track.id}
-                      track={track}
-                      onPlay={handlePlay}
-                      onDelete={handleDelete}
-                      onAddToPlaylist={(t) => setPlaylistModalTrack(t)}
-                      onUploadLyrics={handleUploadLyrics}
-                      isPlaying={playingId === track.id}
-                      isLoading={loadingTrackId === track.id}
+              {/* ── Left: Track list ── */}
+              <div className="flex-1 lg:max-w-[65%] xl:max-w-[68%] overflow-y-auto border-b lg:border-b-0 lg:border-r border-noir-border/40 flex flex-col min-h-0">
+                {/* Search bar */}
+                <div className="p-4 sm:p-5 border-b border-noir-border/40 shrink-0">
+                  <div className="relative w-full">
+                    <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-noir-dim text-sm pointer-events-none">
+                      🔍
+                    </span>
+                    <input
+                      type="text"
+                      placeholder="Search tracks by title or artist…"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      className="w-full bg-noir-graphite border border-noir-border text-noir-white pl-10 pr-10 py-2.5 rounded-lg font-ui text-sm focus:outline-none focus:border-accent-gold/60 focus:ring-2 focus:ring-accent-gold/20 transition-all placeholder:text-noir-dim"
                     />
-                  ))}
-                  <div className="flex items-center justify-between pt-2 text-noir-dim font-mono text-xs">
-                    <span>{filtered.length} track{filtered.length !== 1 ? 's' : ''}</span>
-                    {storage && <span>{storage.usedGB} GB used</span>}
+                    {search && (
+                      <button
+                        onClick={() => setSearch('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-noir-dim hover:text-noir-white transition-colors p-1"
+                        title="Clear search"
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
                 </div>
-              )}
-            </div>
-          </div>
 
-          {/* ── Right: Upload sidebar ── */}
-          <div className="w-full lg:w-[35%] xl:w-[32%] overflow-y-auto p-4 sm:p-6 bg-noir-deep/40 flex flex-col gap-4 shrink-0">
-            <UploadSidebar
-              onUploaded={handleUploaded}
-              isFull={storage?.isFull ?? false}
-            />
-          </div>
-        </div>
+                {/* Error banner */}
+                {error && (
+                  <div className="m-4 p-4 rounded-lg bg-red-950/20 border border-red-900/50 text-red-400 font-ui text-sm flex justify-between items-center shrink-0">
+                    <span>{error}</span>
+                    <button onClick={() => setError(null)} className="text-red-400 hover:text-red-200 transition-colors p-1">
+                      ✕
+                    </button>
+                  </div>
+                )}
+
+                {/* Track list body */}
+                <div className="flex-1 overflow-y-auto p-4 sm:p-5">
+                  {loading ? (
+                    <div className="flex flex-col items-center justify-center py-20 gap-4">
+                      <Spinner size="lg" />
+                      <p className="font-mono text-xs text-noir-dim tracking-widest uppercase">
+                        Loading Cloud Library...
+                      </p>
+                    </div>
+                  ) : filtered.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-20 gap-3 border border-dashed border-noir-border rounded-xl">
+                      <p className="text-4xl opacity-20 text-accent-gold">☁</p>
+                      <p className="font-display text-lg text-noir-ash">
+                        {search ? 'No tracks found' : 'Cloud library is empty'}
+                      </p>
+                      <p className="font-ui text-xs text-noir-dim">
+                        {search ? 'Try a different search keyword' : 'Upload a track using the form on the right →'}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-3">
+                      {filtered.map((track) => (
+                        <TrackCard
+                          key={track.id}
+                          track={track}
+                          onPlay={handlePlay}
+                          onDelete={handleDelete}
+                          onAddToPlaylist={handleR2AddToPlaylist}
+                          onUploadLyrics={handleUploadLyrics}
+                          isPlaying={playingId === track.id}
+                          isLoading={loadingTrackId === track.id}
+                        />
+                      ))}
+                      <div className="flex items-center justify-between pt-2 text-noir-dim font-mono text-xs">
+                        <span>{filtered.length} track{filtered.length !== 1 ? 's' : ''}</span>
+                        {storage && <span>{storage.usedGB} GB used</span>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* ── Right: Upload sidebar ── */}
+              <div className="w-full lg:w-[35%] xl:w-[32%] overflow-y-auto p-4 sm:p-6 bg-noir-deep/40 flex flex-col gap-4 shrink-0">
+                <UploadSidebar
+                  onUploaded={handleUploaded}
+                  isFull={storage?.isFull ?? false}
+                />
+              </div>
+            </div>
+          </>
+        ) : (
+          /* ── Spotify Discovery View ── */
+          <SpotifyDiscoveryView onAddToPlaylist={handleSpotifyAddToPlaylist} />
+        )}
       </div>
 
       <AddToPlaylistModal
-        track={playlistModalTrack ? {
-          id: playlistModalTrack.id,
-          title: playlistModalTrack.title,
-          artist: playlistModalTrack.artist,
-          album: 'Cloud Library',
-          duration: playlistModalTrack.duration ?? undefined,
-          provider: 'local',
-          cover_key: playlistModalTrack.cover_key,
-        } : null}
+        track={playlistModalTrack}
         isOpen={!!playlistModalTrack}
         onClose={() => setPlaylistModalTrack(null)}
       />

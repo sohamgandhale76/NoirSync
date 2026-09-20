@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { MusicSearchResponse, ProviderSearchResult } from '../lib/music/types';
 import { TrackProvider } from '../types';
+import { SERVER_URL } from '../lib/constants';
 
 interface SearchOptions {
   provider?: TrackProvider;
@@ -19,8 +20,9 @@ export function useMusicSearch() {
     setResults([]);
 
     try {
+      const base = SERVER_URL || '';
       const providerParam = options?.provider ? `&provider=${options.provider}` : '';
-      const res = await fetch(`/api/music/search?q=${encodeURIComponent(query)}${providerParam}`);
+      const res = await fetch(`${base}/api/music/search?q=${encodeURIComponent(query)}${providerParam}`);
       
       if (!res.ok) {
         throw new Error(`Search failed: ${res.statusText}`);
