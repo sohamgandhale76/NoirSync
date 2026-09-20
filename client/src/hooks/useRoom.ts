@@ -84,6 +84,7 @@ const DEFAULT_STATE: RoomState = {
 
 export interface UseRoomReturn {
   connected: boolean;
+  roomJoined: boolean;
   roomState: RoomState;
   roomError: string | null;
   emitPlay: (currentTime: number, chunkIndex: number) => void;
@@ -103,6 +104,7 @@ export function useRoom(
   displayName: string
 ): UseRoomReturn {
   const [connected, setConnected] = useState(false);
+  const [roomJoined, setRoomJoined] = useState(false);
   const [roomState, setRoomState] = useState<RoomState>(DEFAULT_STATE);
   const [roomError, setRoomError] = useState<string | null>(null);
 
@@ -115,17 +117,23 @@ export function useRoom(
 
     const handleConnect = () => {
       setConnected(true);
+      setRoomJoined(false);
       setRoomError(null);
       socket.emit('room:join', { roomId, role, displayName });
     };
 
-    const handleDisconnect = () => setConnected(false);
+    const handleDisconnect = () => {
+      setConnected(false);
+      setRoomJoined(false);
+    };
 
     const handleRoomJoined = ({ state }: { state: RoomState }) => {
+      setRoomJoined(true);
       setRoomState((prev) => ({ ...prev, ...state }));
     };
 
     const handleRoomError = ({ message }: { message: string }) => {
+      setRoomJoined(false);
       setRoomError(message);
     };
 
@@ -182,8 +190,11 @@ export function useRoom(
     };
 
     const handleSyncSpotifyListeners = ({ listeners }: { listeners: SpotifyListenerInfo[] }) => {
-      console.info('[useRoom] sync:spotify_listeners received payload from server:', listeners);
-      setRoomState((s) => ({ ...s, spotifyListeners: listeners }));
+      console.info('[Room] sync:spotify_listeners received', listeners);
+      setRoomState((s) => {
+        console.info('[Room] spotifyListeners state updated', listeners);
+        return { ...s, spotifyListeners: listeners };
+      });
     };
 
     // Register all listeners
@@ -257,6 +268,7 @@ export function useRoom(
 
   return {
     connected,
+    roomJoined,
     roomState,
     roomError,
     emitPlay,

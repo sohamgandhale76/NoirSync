@@ -39,6 +39,7 @@ function formatTime(secs: number): string {
 export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   const {
     connected,
+    roomJoined,
     roomState,
     roomError,
     emitPlay,
@@ -64,6 +65,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   } = useSpotifyRoom({
     roomState,
     role: 'host',
+    roomJoined,
     emitListenerStatus: emitSpotifyListenerStatus,
   });
 

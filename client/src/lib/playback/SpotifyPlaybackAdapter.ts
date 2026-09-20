@@ -140,6 +140,7 @@ export class SpotifyPlaybackAdapter implements PlaybackAdapter {
         });
 
         await this.player.connect();
+        console.info('[SpotifyRoom] adapter initialized, waiting for ready event. deviceId:', this.deviceId);
       } catch (err) {
         this.initPromise = null;
         throw err;

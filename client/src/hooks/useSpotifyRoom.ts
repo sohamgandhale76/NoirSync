@@ -5,12 +5,14 @@ import { RoomState, SpotifyListenerInfo } from './useRoom';
 interface UseSpotifyRoomProps {
   roomState: RoomState;
   role: 'host' | 'viewer';
+  roomJoined?: boolean;
   emitListenerStatus?: (status: Partial<SpotifyListenerInfo>) => void;
 }
 
 export function useSpotifyRoom({
   roomState,
   role,
+  roomJoined,
   emitListenerStatus,
 }: UseSpotifyRoomProps) {
   const {
@@ -79,9 +81,9 @@ export function useSpotifyRoom({
     };
   }, [adapter, roomState.isPlaying]);
 
-  // Periodically report status to room
+  // Report status to room whenever room membership is confirmed or status changes
   useEffect(() => {
-    if (!emitListenerStatus) return;
+    if (!roomJoined || !emitListenerStatus) return;
 
     let status = 'not_connected';
     if (!isSpotifyConnected) {
@@ -106,9 +108,10 @@ export function useSpotifyRoom({
       status,
     };
 
-    console.info('[SpotifyRoom] Emitting listener status payload to room:', payload);
+    console.info('[SpotifyRoom] emitting listener status');
+    console.info('[SpotifyRoom] listener status payload', payload);
     emitListenerStatus(payload);
-  }, [emitListenerStatus, isSpotifyConnected, isPremium, isReady, inSync, playbackBlocked]);
+  }, [emitListenerStatus, roomJoined, isSpotifyConnected, isPremium, isReady, inSync, playbackBlocked, roomState.source, roomState.spotifyTrack?.id]);
 
   // Handle Room State synchronization for Spotify tracks
   useEffect(() => {

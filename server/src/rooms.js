@@ -317,6 +317,11 @@ class Room {
     if (info && info.userId) {
       this.userIds.add(info.userId);
     }
+    const listener = this.spotifyListeners.get(socketId);
+    if (listener) {
+      if (info?.displayName) listener.displayName = info.displayName;
+      if (info?.userId) listener.userId = info.userId;
+    }
     this.touch();
   }
 

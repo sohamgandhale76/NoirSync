@@ -1,4 +1,4 @@
-﻿// ─── NoirSync Server Entry Point ──────────────────────────────────────────
+// ─── NoirSync Server Entry Point ──────────────────────────────────────────
 // Express + Socket.io backend with:
 //   • Helmet security headers
 //   • CORS configuration
@@ -1052,9 +1052,25 @@ io.on('connection', (socket) => {
 
   // â”€â”€ Listener: Spotify Status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   socket.on('spotify:listener_status', ({ roomId, isConnected, isPremium, isReady, inSync, status }) => {
-    if (!roomId) return;
+    if (!roomId) {
+      logger.warn('[SpotifyRoom] spotify:listener_status received without roomId', { socketId: socket.id });
+      return;
+    }
     const room = roomManager.getRoom(roomId.toUpperCase());
-    if (!room) return;
+    if (!room) {
+      logger.warn('[SpotifyRoom] spotify:listener_status received for non-existent room', { roomId, socketId: socket.id });
+      return;
+    }
+
+    logger.info('[SpotifyRoom] listener status received', {
+      socketId: socket.id,
+      roomId: roomId.toUpperCase(),
+      isConnected,
+      isPremium,
+      isReady,
+      inSync,
+      status
+    });
 
     room.updateSpotifyListener(socket.id, {
       isConnected,
@@ -1062,6 +1078,17 @@ io.on('connection', (socket) => {
       isReady,
       inSync,
       status
+    });
+
+    logger.info('[SpotifyRoom] updated listeners', {
+      roomId: roomId.toUpperCase(),
+      listenerCount: room.spotifyListeners.size,
+      listeners: Array.from(room.spotifyListeners.values())
+    });
+
+    logger.info('[SpotifyRoom] broadcasting listeners', {
+      roomId: roomId.toUpperCase(),
+      listenerCount: room.spotifyListeners.size
     });
 
     io.to(roomId.toUpperCase()).emit('sync:spotify_listeners', {

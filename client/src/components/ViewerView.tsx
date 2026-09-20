@@ -41,7 +41,7 @@ function formatTime(secs: number): string {
 }
 
 export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
-  const { connected, roomState, roomError, emitSpotifyListenerStatus } = useRoom(roomId, 'viewer', displayName);
+  const { connected, roomJoined, roomState, roomError, emitSpotifyListenerStatus } = useRoom(roomId, 'viewer', displayName);
   const toast = useToast();
   const { user: authUser, isAuthenticated, login, register, logout } = useAuth();
 
@@ -57,6 +57,7 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
   } = useSpotifyRoom({
     roomState,
     role: 'viewer',
+    roomJoined,
     emitListenerStatus: emitSpotifyListenerStatus,
   });
 

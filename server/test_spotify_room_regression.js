@@ -136,6 +136,82 @@ async function runTests() {
   rm.destroy();
   console.log('   ✓ RoomManager properly manages Spotify rooms');
 
+  // ─── Test 7: Race Resolution - Early Status Emission & Confirmed Room Membership Snapshot ───
+  console.log('\n7. Testing early emission & room join snapshot resolution...');
+  const raceRoom = new Room('RACEROOM');
+  raceRoom.setSpotifyTrack(mockSpotifyTrack);
+
+  // Status emitted and registered on server
+  raceRoom.updateSpotifyListener('socket_viewer_race', {
+    isConnected: true,
+    isPremium: true,
+    isReady: true,
+    inSync: true,
+    status: 'in_sync'
+  });
+
+  // Client adds member / joins room
+  raceRoom.addMember('socket_viewer_race', { userId: 'usr_race', role: 'viewer', displayName: 'RaceUser' });
+  const joinedSnapshot = raceRoom.getState();
+
+  assert.strictEqual(joinedSnapshot.spotifyListeners.length, 1);
+  assert.strictEqual(joinedSnapshot.spotifyListeners[0].socketId, 'socket_viewer_race');
+  assert.strictEqual(joinedSnapshot.spotifyListeners[0].displayName, 'RaceUser');
+  assert.strictEqual(joinedSnapshot.spotifyListeners[0].isPremium, true);
+  assert.strictEqual(joinedSnapshot.spotifyListeners[0].inSync, true);
+  console.log('   ✓ Room-join state snapshot reliably delivers listener status to client');
+
+  // ─── Test 8: Late Joiner Snapshot Delivery ──────────────────────────────
+  console.log('\n8. Testing late joiner receives existing listener-state snapshot...');
+  raceRoom.addMember('socket_late_joiner', { userId: 'usr_late', role: 'viewer', displayName: 'LateUser' });
+  const lateSnapshot = raceRoom.getState();
+
+  // Late joiner immediately sees existing 'socket_viewer_race' in state without waiting for a broadcast
+  const existingInSnapshot = lateSnapshot.spotifyListeners.find(l => l.socketId === 'socket_viewer_race');
+  assert.ok(existingInSnapshot, 'Late joiner state snapshot must contain existing room listeners');
+  assert.strictEqual(existingInSnapshot.isPremium, true);
+  assert.strictEqual(existingInSnapshot.inSync, true);
+  console.log('   ✓ Late joiner receives complete existing listener snapshot on join');
+
+  // ─── Test 9: Reconnecting Client Re-establishes Listener Status ──────────
+  console.log('\n9. Testing client disconnect and reconnection lifecycle...');
+  // Viewer disconnects
+  raceRoom.removeMember('socket_viewer_race');
+  assert.strictEqual(raceRoom.getState().spotifyListeners.length, 0);
+
+  // Viewer reconnects with new socket ID
+  raceRoom.addMember('socket_viewer_reconnect', { userId: 'usr_race', role: 'viewer', displayName: 'RaceUser' });
+  raceRoom.updateSpotifyListener('socket_viewer_reconnect', {
+    isConnected: true,
+    isPremium: true,
+    isReady: true,
+    inSync: false,
+    status: 'ready'
+  });
+  const reconnectedState = raceRoom.getState();
+  assert.strictEqual(reconnectedState.spotifyListeners.length, 1);
+  assert.strictEqual(reconnectedState.spotifyListeners[0].socketId, 'socket_viewer_reconnect');
+  assert.strictEqual(reconnectedState.spotifyListeners[0].status, 'ready');
+  console.log('   ✓ Reconnecting client cleanly establishes new listener status');
+
+  // ─── Test 10: Switching Room Source Resets inSync Without Stale State ────
+  console.log('\n10. Testing switching room source resets inSync safely...');
+  const newSpotifyTrack = {
+    id: 'nextTrackId',
+    uri: 'spotify:track:nextTrackId',
+    title: 'Next Song',
+    artist: 'Next Artist',
+    album: 'Next Album',
+    duration: 180,
+    durationMs: 180000
+  };
+  raceRoom.setSpotifyTrack(newSpotifyTrack);
+  const switchedState = raceRoom.getState();
+  assert.strictEqual(switchedState.spotifyTrack.id, 'nextTrackId');
+  assert.strictEqual(switchedState.spotifyListeners[0].inSync, false, 'inSync must be reset on track change');
+  assert.strictEqual(switchedState.spotifyListeners[0].status, 'ready', 'Status must transition to ready');
+  console.log('   ✓ Track switch preserves listener registrations while resetting inSync');
+
   console.log('\n=== ALL SPOTIFY ROOM REGRESSION TESTS PASSED! ===');
 }
 
