@@ -149,6 +149,8 @@ export function PlaylistBrowser({
       setSpotifyUrl('');
       if (result.playlist?.id) {
         setSelectedPlaylistId(result.playlist.id);
+        setActivePlaylist(result.playlist);
+        if (result.playlist.name) setEditTitleValue(result.playlist.name);
       }
     } catch (err: any) {
       setImportStatus('failed');

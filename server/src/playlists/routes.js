@@ -135,12 +135,35 @@ async function fetchSpotifyPlaylist(playlistId, userId) {
 
   // Collect items from initial page
   let allItems = [];
-  if (playlistData.tracks && Array.isArray(playlistData.tracks.items)) {
+  if (playlistData.tracks && Array.isArray(playlistData.tracks.items) && playlistData.tracks.items.length > 0) {
     allItems = [...playlistData.tracks.items];
+  } else if (Array.isArray(playlistData.tracks) && playlistData.tracks.length > 0) {
+    allItems = [...playlistData.tracks];
+  } else if (Array.isArray(playlistData.items) && playlistData.items.length > 0) {
+    allItems = [...playlistData.items];
+  }
+
+  let nextUrl = playlistData.tracks ? playlistData.tracks.next : null;
+
+  // If initial playlist payload had no track items, query playlist tracks endpoint directly
+  if (allItems.length === 0) {
+    try {
+      const tracksRes = await callSpotify(`/playlists/${playlistId}/tracks?limit=100`, token);
+      if (tracksRes.ok) {
+        const tracksPage = await tracksRes.json();
+        if (tracksPage && Array.isArray(tracksPage.items)) {
+          allItems = [...tracksPage.items];
+          nextUrl = tracksPage.next || null;
+        }
+      } else {
+        logger.warn('Direct playlist tracks fetch returned non-ok status', { status: tracksRes.status });
+      }
+    } catch (tracksErr) {
+      logger.warn('Error fetching playlist tracks endpoint directly:', { error: tracksErr.message });
+    }
   }
 
   // Paginate if next URL exists until all tracks are fetched
-  let nextUrl = playlistData.tracks ? playlistData.tracks.next : null;
   while (nextUrl) {
     try {
       const nextRes = await callSpotify(nextUrl, token);

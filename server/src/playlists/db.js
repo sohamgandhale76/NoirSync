@@ -792,30 +792,70 @@ async function importSpotifyPlaylist(userId, spotifyPlaylistData) {
 
   for (const item of (items || [])) {
     total++;
-    const track = item && item.track;
+    // Support item.track, item.item, or item directly
+    const rawTrack = item?.track || item?.item || item;
 
-    // Check if track is valid Spotify track (not null, not local file, has ID)
-    if (!track || !track.id || track.is_local) {
+    if (!rawTrack) {
+      unavailable++;
+      continue;
+    }
+
+    // Extract track ID from id or uri (spotify:track:ID)
+    let trackId = rawTrack.id;
+    if (!trackId && typeof rawTrack.uri === 'string' && rawTrack.uri.startsWith('spotify:track:')) {
+      trackId = rawTrack.uri.split(':')[2];
+    }
+
+    if (!trackId || rawTrack.is_local) {
       unavailable++;
       continue;
     }
 
     // Check duplicate within playlist (preserve first occurrence)
-    if (seenSpotifyIds.has(track.id)) {
+    if (seenSpotifyIds.has(trackId)) {
       duplicates++;
       continue;
     }
-    seenSpotifyIds.add(track.id);
+    seenSpotifyIds.add(trackId);
+
+    // Format artist names
+    let artistName = 'Unknown Artist';
+    if (Array.isArray(rawTrack.artists)) {
+      artistName = rawTrack.artists.map(a => a?.name).filter(Boolean).join(', ') || 'Unknown Artist';
+    } else if (typeof rawTrack.artist === 'string') {
+      artistName = rawTrack.artist;
+    }
+
+    // Extract duration
+    let durationSec = undefined;
+    if (typeof rawTrack.duration_ms === 'number') {
+      durationSec = rawTrack.duration_ms / 1000;
+    } else if (typeof rawTrack.duration === 'number') {
+      durationSec = rawTrack.duration;
+    }
+
+    // Extract cover image
+    let coverUrl = undefined;
+    if (rawTrack.album?.images && Array.isArray(rawTrack.album.images) && rawTrack.album.images.length > 0) {
+      coverUrl = rawTrack.album.images[0].url;
+    } else if (rawTrack.images && Array.isArray(rawTrack.images) && rawTrack.images.length > 0) {
+      coverUrl = rawTrack.images[0].url;
+    } else if (typeof rawTrack.coverUrl === 'string') {
+      coverUrl = rawTrack.coverUrl;
+    }
+
+    const albumName = rawTrack.album?.name || (typeof rawTrack.album === 'string' ? rawTrack.album : undefined);
+    const externalUrl = rawTrack.external_urls?.spotify || `https://open.spotify.com/track/${trackId}`;
 
     tracksToAdd.push({
       provider: 'spotify',
-      providerTrackId: track.id,
-      title: track.name || 'Untitled Track',
-      artist: track.artists ? track.artists.map(a => a.name).join(', ') : 'Unknown Artist',
-      album: track.album ? track.album.name : undefined,
-      duration: track.duration_ms ? track.duration_ms / 1000 : undefined,
-      coverUrl: (track.album && track.album.images && track.album.images.length > 0) ? track.album.images[0].url : undefined,
-      externalUrl: (track.external_urls && track.external_urls.spotify) ? track.external_urls.spotify : `https://open.spotify.com/track/${track.id}`
+      providerTrackId: trackId,
+      title: rawTrack.name || rawTrack.title || 'Untitled Track',
+      artist: artistName,
+      album: albumName,
+      duration: durationSec,
+      coverUrl,
+      externalUrl
     });
   }
 
@@ -824,8 +864,18 @@ async function importSpotifyPlaylist(userId, spotifyPlaylistData) {
   for (const trackData of tracksToAdd) {
     try {
       const canonicalTrack = await resolveProviderTrack(trackData);
-      resolvedTracks.push(canonicalTrack);
-    } catch {
+      if (canonicalTrack && canonicalTrack.id) {
+        resolvedTracks.push(canonicalTrack);
+      } else {
+        unavailable++;
+      }
+    } catch (resolveErr) {
+      const logger = require('../logger');
+      logger.error('Failed to resolve Spotify track during playlist import', {
+        trackId: trackData.providerTrackId,
+        title: trackData.title,
+        error: resolveErr.message
+      });
       unavailable++;
     }
   }
@@ -851,6 +901,7 @@ async function importSpotifyPlaylist(userId, spotifyPlaylistData) {
       await client.query(`
         INSERT INTO playlist_tracks (id, playlist_id, track_id, position, added_at)
         VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (playlist_id, track_id) DO NOTHING
       `, [ptId, playlistId, canonicalTrack.id, pos, now]);
       added++;
     }
