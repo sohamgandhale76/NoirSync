@@ -4,11 +4,40 @@
 const { v4: uuidv4 } = require('uuid');
 const { pool } = require('../db');
 const { resolveProviderTrack } = require('../music/resolver');
+const { isCanonicalProvider } = require('../music/registry');
+
+/**
+ * Check if a track is accessible to the requesting user for playlist operations.
+ * - Requester-owned private track (track.user_id === userId) -> accessible
+ * - Canonical provider metadata record (isCanonicalProvider(track.provider)) -> accessible
+ * - Orphaned local tracks (provider === 'local' && user_id === null) -> INACCESSIBLE
+ * - Another user's private track (user_id !== userId) -> INACCESSIBLE
+ * 
+ * @param {Object} track 
+ * @param {string} userId 
+ * @returns {boolean}
+ */
+function isTrackAccessible(track, userId) {
+  if (!track) return false;
+  if (track.user_id && track.user_id === userId) {
+    return true;
+  }
+  if (isCanonicalProvider(track.provider)) {
+    // If noirsync_public, must be explicitly published
+    if (track.provider === 'noirsync_public') {
+      return track.publication_status === 'published';
+    }
+    return true;
+  }
+  return false;
+}
 
 /**
  * Ensures a track exists in the canonical tracks table.
  * If local, verifies in database or falls back to legacy catalog.
- * If external (spotify, youtube, apple), checks existing DB record or uses resolver.
+ * If external (spotify, youtube, apple, noirsync_public), checks existing DB record or uses provider adapter.
+ * IMPORTANT: Client-supplied metadata is NEVER authoritative. Authoritative metadata
+ * must come from the registered provider adapter or existing database records.
  * 
  * @param {Object} track 
  * @returns {Promise<Object>} Canonical track from tracks table
@@ -42,16 +71,61 @@ async function ensureTrackExists(track) {
       return existingResult.rows[0];
     }
 
-    // Resolve and insert canonical track
+    // IMPORTANT: CLIENT METADATA IS NEVER AUTHORITATIVE!
+    // Fetch authoritative metadata from provider adapter rather than trusting client fields.
+    const { getMusicProvider } = require('../music/registry');
+    const adapter = getMusicProvider(provider);
+    let authoritativeTrack = null;
+    try {
+      authoritativeTrack = await adapter.getTrack(providerTrackId);
+    } catch (adapterErr) {
+      if (process.env.NODE_ENV !== 'production' && process.env.SPOTIFY_DEV_FIXTURES === 'true' && track.title && (providerTrackId.startsWith('sp_') || providerTrackId.startsWith('spot_') || providerTrackId.startsWith('yt_'))) {
+        authoritativeTrack = {
+          provider,
+          providerTrackId,
+          title: track.title,
+          artist: track.artist || 'Unknown Artist',
+          duration: track.duration,
+          album: track.album,
+          coverUrl: track.cover_key || track.coverUrl,
+          externalUrl: track.external_url || track.externalUrl
+        };
+      } else {
+        const err = new Error(adapterErr.message || 'Track not found in provider');
+        err.status = adapterErr.status || 404;
+        throw err;
+      }
+    }
+
+    if (!authoritativeTrack) {
+      if (process.env.NODE_ENV !== 'production' && process.env.SPOTIFY_DEV_FIXTURES === 'true' && track.title && (providerTrackId.startsWith('sp_') || providerTrackId.startsWith('spot_') || providerTrackId.startsWith('yt_'))) {
+        authoritativeTrack = {
+          provider,
+          providerTrackId,
+          title: track.title,
+          artist: track.artist || 'Unknown Artist',
+          duration: track.duration,
+          album: track.album,
+          coverUrl: track.cover_key || track.coverUrl,
+          externalUrl: track.external_url || track.externalUrl
+        };
+      } else {
+        const err = new Error('Track not found in provider');
+        err.status = 404;
+        throw err;
+      }
+    }
+
+    // Resolve and insert canonical track using authoritative provider metadata ONLY
     const resolved = await resolveProviderTrack({
-      provider,
-      providerTrackId,
-      title: track.title || 'Untitled Track',
-      artist: track.artist || 'Unknown Artist',
-      duration: track.duration || null,
-      coverUrl: track.cover_key || track.coverUrl || null,
-      album: track.album || null,
-      externalUrl: track.external_url || track.externalUrl || null
+      provider: authoritativeTrack.provider || provider,
+      providerTrackId: authoritativeTrack.providerTrackId || providerTrackId,
+      title: authoritativeTrack.title,
+      artist: authoritativeTrack.artist,
+      duration: authoritativeTrack.duration,
+      coverUrl: authoritativeTrack.coverUrl,
+      album: authoritativeTrack.album,
+      externalUrl: authoritativeTrack.externalUrl
     });
     return resolved;
   }
@@ -156,15 +230,44 @@ async function getPlaylistById(playlistId, userId) {
       t.provider,
       t.provider_track_id,
       t.external_url,
-      t.uploaded_at
+      t.uploaded_at,
+      t.user_id AS track_user_id
     FROM playlist_tracks pt
     JOIN tracks t ON t.id = pt.track_id
     WHERE pt.playlist_id = $1
     ORDER BY pt.position ASC
   `, [playlistId]);
 
-  playlist.tracks = tracksResult.rows;
-  playlist.track_count = tracksResult.rows.length;
+  const accessibleTracks = [];
+  for (const row of tracksResult.rows) {
+    const trackWithOwnership = { ...row, user_id: row.track_user_id };
+    if (!isTrackAccessible(trackWithOwnership, userId)) {
+      // Omit entirely from the response if unauthorized or orphaned local track
+      continue;
+    }
+
+    // Sanitize: strip raw R2 storage keys from response
+    const safeTrack = { ...row };
+    delete safeTrack.audio_key;
+    delete safeTrack.cover_key;
+    delete safeTrack.lyrics_key;
+    delete safeTrack.track_user_id;
+
+    if (row.cover_key) {
+      safeTrack.has_cover = true;
+      safeTrack.cover_url = (row.cover_key.startsWith('http://') || row.cover_key.startsWith('https://'))
+        ? row.cover_key
+        : `/library/${row.id}/cover`;
+    } else {
+      safeTrack.has_cover = false;
+      safeTrack.cover_url = null;
+    }
+
+    accessibleTracks.push(safeTrack);
+  }
+
+  playlist.tracks = accessibleTracks;
+  playlist.track_count = accessibleTracks.length;
   return playlist;
 }
 
@@ -327,6 +430,15 @@ async function addTrackToPlaylist(playlistId, userId, trackId, optionalTrackData
     throw err;
   }
 
+  // Enforce track authorization:
+  // Requester must own the track OR it must be a recognized canonical provider metadata record.
+  // Orphaned local tracks (user_id IS NULL) and other users' private tracks are rejected.
+  if (!isTrackAccessible(track, userId)) {
+    const err = new Error('Track not found');
+    err.status = 404;
+    throw err;
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -379,6 +491,21 @@ async function addTrackToPlaylist(playlistId, userId, trackId, optionalTrackData
 
     await client.query('COMMIT');
 
+    // Sanitize track in response: never expose raw R2 storage keys
+    const safeTrack = { ...track };
+    delete safeTrack.audio_key;
+    delete safeTrack.cover_key;
+    delete safeTrack.lyrics_key;
+    if (track.cover_key) {
+      safeTrack.has_cover = true;
+      safeTrack.cover_url = (track.cover_key.startsWith('http://') || track.cover_key.startsWith('https://'))
+        ? track.cover_key
+        : `/library/${track.id}/cover`;
+    } else {
+      safeTrack.has_cover = false;
+      safeTrack.cover_url = null;
+    }
+
     return {
       id: ptId,
       playlist_track_id: ptId,
@@ -386,7 +513,7 @@ async function addTrackToPlaylist(playlistId, userId, trackId, optionalTrackData
       track_id: track.id,
       position: nextPos,
       added_at: now,
-      track
+      track: safeTrack
     };
   } catch (err) {
     await client.query('ROLLBACK');
@@ -569,6 +696,57 @@ async function reorderPlaylistTracks(playlistId, userId, trackIds) {
   return getPlaylistById(playlistId, userId);
 }
 
+/**
+ * Detect and detach invalid historical cross-user playlist_tracks references.
+ * Idempotent and migration-scoped (recorded in schema_migrations).
+ * Deletes ONLY invalid join rows, never deletes tracks or playlists, never reassigns ownership.
+ * 
+ * @param {import('pg').PoolClient|import('pg').Pool} [client]
+ * @param {{ force?: boolean }} [options]
+ * @returns {Promise<{ executed: boolean, deletedCount: number }>}
+ */
+async function cleanupInvalidPlaylistTracks(client = pool, { force = false } = {}) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id TEXT PRIMARY KEY,
+      applied_at BIGINT NOT NULL,
+      details TEXT
+    )
+  `);
+
+  if (!force) {
+    const check = await client.query(
+      'SELECT 1 FROM schema_migrations WHERE id = $1',
+      ['phase_6c_cleanup_invalid_playlist_tracks']
+    );
+    if (check.rows.length > 0) {
+      return { executed: false, deletedCount: 0 };
+    }
+  }
+
+  const deleteRes = await client.query(`
+    DELETE FROM playlist_tracks pt
+    USING playlists p, tracks t
+    WHERE pt.playlist_id = p.id
+      AND pt.track_id = t.id
+      AND p.user_id != t.user_id
+      AND t.user_id IS NOT NULL
+  `);
+
+  const deletedCount = deleteRes.rowCount || 0;
+  const now = Date.now();
+
+  await client.query(`
+    INSERT INTO schema_migrations (id, applied_at, details)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (id) DO UPDATE SET
+      applied_at = EXCLUDED.applied_at,
+      details = EXCLUDED.details
+  `, ['phase_6c_cleanup_invalid_playlist_tracks', now, `Detached ${deletedCount} invalid cross-user playlist_tracks references`]);
+
+  return { executed: true, deletedCount };
+}
+
 module.exports = {
   ensureTrackExists,
   getUserPlaylists,
@@ -578,5 +756,7 @@ module.exports = {
   deletePlaylist,
   addTrackToPlaylist,
   removeTrackFromPlaylist,
-  reorderPlaylistTracks
+  reorderPlaylistTracks,
+  isTrackAccessible,
+  cleanupInvalidPlaylistTracks
 };

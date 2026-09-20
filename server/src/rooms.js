@@ -18,8 +18,12 @@ const ROOM_TTL_MS = parseInt(process.env.ROOM_TTL_MS || '7200000', 10); // 2 hou
 class Room {
   constructor(roomId) {
     this.roomId   = roomId;
+    this.hostUserId = null;   // Server-authoritative host user ID
+    this.hostSocketId = null; // Host transport socket ID (bookkeeping only)
+    this.userIds  = new Set(); // Set<userId: string> - active room members
     this.chunks   = new Map(); // Map<chunkIndex: number, ChunkEntry>
     this.members  = new Map(); // Map<socketId: string, MemberInfo>
+    this.maxBufferedBytes = parseInt(process.env.MAX_ROOM_BUFFERED_MB || '100', 10) * 1024 * 1024; // 100MB default
     this.state    = {
       isPlaying: false,
       currentTime: 0,
@@ -40,6 +44,29 @@ class Room {
     this.telegramFileIds   = null;
     this.createdAt   = Date.now();
     this.lastActivity = Date.now();
+  }
+
+  // ── Host & Membership Authority ──
+
+  setHost(userId, socketId) {
+    this.hostUserId = userId || null;
+    this.hostSocketId = socketId || null;
+  }
+
+  /**
+   * Authoritative host check based strictly on authenticated user identity.
+   * Transport socketId does NOT independently grant host authority.
+   */
+  isHost(userId) {
+    return Boolean(userId && this.hostUserId && userId === this.hostUserId);
+  }
+
+  /**
+   * Authoritative membership check based strictly on authenticated user identity.
+   * Transport socketId does NOT independently grant room membership.
+   */
+  isMember(userId) {
+    return Boolean(userId && this.userIds.has(userId));
   }
 
   // ── Chunk management ──
@@ -115,12 +142,29 @@ class Room {
     return entry;
   }
 
+  /**
+   * INVARIANT: Temporary room uploads are strictly in-memory chunks.
+   * They must NEVER create database records in `tracks`, never touch R2,
+   * and never be added to persistent Cloud Library catalogs.
+   */
   addChunk(index, buffer, mimeType) {
+    const chunkSize = buffer ? buffer.length : 0;
+    const existingSize = this.chunks.has(index) ? this.chunks.get(index).size : 0;
+    const currentBytes = this.totalBufferedBytes();
+
+    // Check memory limit BEFORE storing chunk in memory
+    if ((currentBytes - existingSize + chunkSize) > this.maxBufferedBytes) {
+      const limitMB = Math.round(this.maxBufferedBytes / (1024 * 1024));
+      const err = new Error(`Room buffered memory limit (${limitMB}MB) exceeded`);
+      err.status = 413;
+      throw err;
+    }
+
     this.chunks.set(index, {
       buffer,
       mimeType: mimeType || this.state.mimeType,
       uploadedAt: Date.now(),
-      size: buffer.length,
+      size: chunkSize,
     });
     if (mimeType) this.state.mimeType = mimeType;
     this.touch();
@@ -128,7 +172,7 @@ class Room {
     logger.debug('Chunk stored', {
       room: this.roomId,
       chunkIndex: index,
-      sizeKB: (buffer.length / 1024).toFixed(1),
+      sizeKB: (chunkSize / 1024).toFixed(1),
       totalChunks: this.chunks.size,
     });
   }
@@ -184,11 +228,42 @@ class Room {
 
   addMember(socketId, info) {
     this.members.set(socketId, { ...info, joinedAt: Date.now() });
+    if (info && info.userId) {
+      this.userIds.add(info.userId);
+    }
     this.touch();
   }
 
   removeMember(socketId) {
+    const member = this.members.get(socketId);
     this.members.delete(socketId);
+
+    if (member && member.userId) {
+      // Only remove userId if no other sockets remain for this user
+      let stillPresent = false;
+      for (const m of this.members.values()) {
+        if (m.userId === member.userId) {
+          stillPresent = true;
+          break;
+        }
+      }
+      if (!stillPresent) {
+        this.userIds.delete(member.userId);
+      }
+    }
+
+    if (this.hostSocketId === socketId) {
+      let remainingHostSocket = null;
+      if (this.hostUserId) {
+        for (const [sid, m] of this.members.entries()) {
+          if (m.userId === this.hostUserId) {
+            remainingHostSocket = sid;
+            break;
+          }
+        }
+      }
+      this.hostSocketId = remainingHostSocket;
+    }
     this.touch();
   }
 
@@ -217,7 +292,15 @@ class Room {
     };
   }
 
-  // ── TTL ──
+  // ── Lifecycle & TTL ──
+
+  destroy() {
+    this.chunks.clear();
+    this.members.clear();
+    this.userIds.clear();
+    this.libraryFileBuffer = null;
+    this.telegramFileIds = null;
+  }
 
   touch() {
     this.lastActivity = Date.now();
@@ -239,10 +322,13 @@ class RoomManager {
     logger.info('RoomManager initialised', { ttlMs: ROOM_TTL_MS });
   }
 
-  createRoom(roomId) {
+  createRoom(roomId, hostUserId = null, hostSocketId = null) {
     const room = new Room(roomId);
+    if (hostUserId) {
+      room.setHost(hostUserId, hostSocketId);
+    }
     this.rooms.set(roomId, room);
-    logger.info('Room created', { roomId });
+    logger.info('Room created', { roomId, hostUserId });
     return room;
   }
 
@@ -266,6 +352,7 @@ class RoomManager {
     if (room) {
       room.removeMember(socketId);
       if (room.getMemberCount() === 0) {
+        room.destroy();
         this.rooms.delete(roomId);
         logger.info('Room deleted (empty)', { roomId });
       }
@@ -293,6 +380,7 @@ class RoomManager {
     let swept = 0;
     for (const [id, room] of this.rooms) {
       if (room.isExpired()) {
+        room.destroy();
         this.rooms.delete(id);
         // Clean up member index entries for this room
         for (const [sid, rid] of this.memberIndex) {
@@ -308,6 +396,11 @@ class RoomManager {
   /** Call on process exit to clean up the interval */
   destroy() {
     clearInterval(this._gcInterval);
+    for (const room of this.rooms.values()) {
+      room.destroy();
+    }
+    this.rooms.clear();
+    this.memberIndex.clear();
   }
 }
 

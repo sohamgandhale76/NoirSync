@@ -17,6 +17,8 @@ export interface Track {
 
     cover_key?: string | null;
     lyrics_key?: string | null;
+    has_cover?: boolean;
+    cover_url?: string | null;
 }
 
 /**

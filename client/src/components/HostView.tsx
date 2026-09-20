@@ -12,6 +12,7 @@ import { ToastContainer } from './Toast';
 import { Library } from './Library';
 import { LibraryBrowser } from './LibraryBrowser';
 import { PlaylistBrowser } from './PlaylistBrowser';
+import { UniversalMusicView } from './UniversalMusicView';
 import { DynamicBackground } from './DynamicBackground';
 import { sliceAudioFile, timeToChunkIndex, CHUNK_DURATION } from '../lib/chunker';
 import { parseLrc, type LrcLine, type LrcMeta } from '../lib/lrcParser';
@@ -67,8 +68,8 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
   const [songName, setSongName]       = useState('');
   const [audioReady, setAudioReady]   = useState(false);
   const [dragOver, setDragOver]       = useState(false);
-  const [activeTab, setActiveTab]     = useState<'player' | 'library' | 'playlists'>('player');
-  const [mobileTab, setMobileTab]     = useState<'player' | 'lyrics' | 'library' | 'playlists'>('player');
+  const [activeTab, setActiveTab]     = useState<'player' | 'library' | 'universal' | 'playlists'>('player');
+  const [mobileTab, setMobileTab]     = useState<'player' | 'lyrics' | 'library' | 'universal' | 'playlists'>('player');
   const [showR2Library, setShowR2Library] = useState(false);
   const [libraryMode, setLibraryMode]     = useState<'r2' | 'playlists' | 'local'>('r2');
 
@@ -193,6 +194,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
         const res = await fetch(`${SERVER_URL || ''}/api/rooms/${roomId}/chunks`, {
           method: 'POST',
           body: form,
+          credentials: 'include',
         });
 
         if (!res.ok) {
@@ -536,7 +538,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     const mimeType = format === 'flac' ? 'audio/flac' :
                      format === 'wav'  ? 'audio/wav'  :
                      format === 'ogg'  ? 'audio/ogg'  : 'audio/mpeg';
-    const coverFilename = track.cover_key ? (track.cover_key.startsWith('r2-') ? track.cover_key : `r2-${track.id}`) : null;
+    const coverFilename = (track.has_cover || track.cover_key) ? (track.cover_key && track.cover_key.startsWith('r2-') ? track.cover_key : `r2-${track.id}`) : null;
     playTrack({
       id: track.id,
       title: track.title,
@@ -558,7 +560,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     const mimeType = format === 'flac' ? 'audio/flac' :
                      format === 'wav'  ? 'audio/wav'  :
                      format === 'ogg'  ? 'audio/ogg'  : 'audio/mpeg';
-    const coverFilename = track.cover_key ? (track.cover_key.startsWith('r2-') ? track.cover_key : `r2-${track.id}`) : null;
+    const coverFilename = (track.has_cover || track.cover_key) ? (track.cover_key && track.cover_key.startsWith('r2-') ? track.cover_key : `r2-${track.id}`) : null;
     handleAddToQueue({
       id: track.id,
       title: track.title,
@@ -587,7 +589,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
       const mimeType = format === 'flac' ? 'audio/flac' :
                        format === 'wav'  ? 'audio/wav'  :
                        format === 'ogg'  ? 'audio/ogg'  : 'audio/mpeg';
-      const coverFilename = track.cover_key ? (track.cover_key.startsWith('r2-') ? track.cover_key : `r2-${track.id}`) : null;
+      const coverFilename = (track.has_cover || track.cover_key) ? (track.cover_key && track.cover_key.startsWith('r2-') ? track.cover_key : `r2-${track.id}`) : null;
       return {
         id: track.id,
         title: track.title,
@@ -767,7 +769,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                   : 'text-noir-dim hover:text-noir-white'
               }`}
             >
-              🎛 Player
+              📻 Room
             </button>
             <button
               onClick={() => setActiveTab('library')}
@@ -777,7 +779,17 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                   : 'text-noir-dim hover:text-noir-white'
               }`}
             >
-              📚 Library
+              ☁ Cloud
+            </button>
+            <button
+              onClick={() => setActiveTab('universal')}
+              className={`flex-1 py-3 text-xs font-mono tracking-wider transition-colors ${
+                activeTab === 'universal'
+                  ? 'text-accent-gold border-b-2 border-accent-gold bg-noir-charcoal/20'
+                  : 'text-noir-dim hover:text-noir-white'
+              }`}
+            >
+              🌐 Universal
             </button>
             <button
               onClick={() => setActiveTab('playlists')}
@@ -931,6 +943,17 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
                     className="hidden"
                     onChange={(e) => processFiles(Array.from(e.target.files ?? []))}
                   />
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'universal' && (
+              <div className="space-y-4">
+                <div className="text-center py-4 px-4 border border-dashed border-noir-border rounded-xl">
+                  <p className="font-ui text-sm text-noir-ash">🌐 Universal Music</p>
+                  <p className="font-mono text-[10px] text-noir-dim mt-1">
+                    Multi-provider search across Spotify, YouTube, Apple Music, and NoirSync Public catalog.
+                  </p>
                 </div>
               </div>
             )}
@@ -1220,7 +1243,23 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
 
         {/* ── Right: main content area ────────────────────────────────────── */}
         <main className="flex-1 flex flex-col overflow-hidden">
-          {activeTab === 'playlists' ? (
+          {activeTab === 'universal' ? (
+            <UniversalMusicView
+              onPlayTrack={(track) => {
+                if (track.capabilities.playback === 'noirsync_stream' && track.id) {
+                  const url = `${SERVER_URL || ''}/api/catalog/tracks/${track.id}/stream`;
+                  if (adapter) {
+                    adapter.setSrc(url);
+                    setAudioReady(true);
+                    setSongName(track.title);
+                    setIsPlaying(true);
+                    emitPlay(0, 0);
+                  }
+                }
+              }}
+              activeTrackId={activeTrack?.id}
+            />
+          ) : activeTab === 'playlists' ? (
             <div className="flex-1 p-8 overflow-y-auto z-10">
               <div className="max-w-4xl mx-auto space-y-6">
                 <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -1653,6 +1692,26 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
           </div>
         )}
 
+        {mobileTab === 'universal' && (
+          <div className="h-[calc(100vh-8rem)]">
+            <UniversalMusicView
+              onPlayTrack={(track) => {
+                if (track.capabilities.playback === 'noirsync_stream' && track.id) {
+                  const url = `${SERVER_URL || ''}/api/catalog/tracks/${track.id}/stream`;
+                  if (adapter) {
+                    adapter.setSrc(url);
+                    setAudioReady(true);
+                    setSongName(track.title);
+                    setIsPlaying(true);
+                    emitPlay(0, 0);
+                  }
+                }
+              }}
+              activeTrackId={activeTrack?.id}
+            />
+          </div>
+        )}
+
         {mobileTab === 'playlists' && (
           <div className="space-y-4">
             <div className="text-center py-4 px-4 border border-dashed border-noir-border rounded-xl">
@@ -1761,8 +1820,17 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
             mobileTab === 'library' ? 'text-accent-gold' : 'text-noir-dim hover:text-noir-white'
           }`}
         >
-          <span className="text-lg">📚</span>
-          <span>Library</span>
+          <span className="text-lg">☁</span>
+          <span>Cloud</span>
+        </button>
+        <button
+          onClick={() => setMobileTab('universal')}
+          className={`flex flex-col items-center justify-center gap-1 text-[10px] font-mono tracking-wider transition-colors ${
+            mobileTab === 'universal' ? 'text-accent-gold' : 'text-noir-dim hover:text-noir-white'
+          }`}
+        >
+          <span className="text-lg">🌐</span>
+          <span>Universal</span>
         </button>
         <button
           onClick={() => setMobileTab('playlists')}

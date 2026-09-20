@@ -696,7 +696,7 @@ export function LibraryBrowser({
                     mimeType: pt.format === 'flac' ? 'audio/flac' : 'audio/mpeg',
                     fileSize: pt.size || 0,
                     filename: pt.id,
-                    coverFilename: pt.cover_key || null,
+                    coverFilename: (pt.has_cover || pt.cover_key) ? (pt.cover_key && pt.cover_key.startsWith('r2-') ? pt.cover_key : `r2-${pt.id}`) : null,
                     uploadedAt: Date.now(),
                   }
                 );

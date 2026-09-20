@@ -156,6 +156,36 @@ async function initDb() {
       ON playlist_tracks (track_id)
     `);
 
+    // Phase 6C: Idempotent one-time cleanup of invalid historical cross-user playlist_tracks references
+    const { cleanupInvalidPlaylistTracks } = require('./playlists/db');
+    await cleanupInvalidPlaylistTracks(pool);
+
+    // Phase 6E: Universal Music Library schema additions
+    await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS publication_status TEXT DEFAULT 'draft'`);
+    await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS download_allowed BOOLEAN DEFAULT FALSE`);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS tracks_catalog_lookup_idx 
+      ON tracks (provider, publication_status) 
+      WHERE user_id IS NULL;
+    `);
+
+    // Phase 6E: Safe, idempotent migration of legitimate canonical provider records
+    // Invariants:
+    // - tracks.user_id IS NOT NULL -> remains private, never catalog
+    // - provider = 'local' -> remains draft / excluded
+    // - Only legitimate canonical provider metadata records (user_id IS NULL, recognized provider, valid ID and title)
+    await pool.query(`
+      UPDATE tracks
+      SET publication_status = 'published'
+      WHERE user_id IS NULL
+        AND provider IN ('spotify', 'youtube', 'apple')
+        AND provider_track_id IS NOT NULL
+        AND TRIM(provider_track_id) != ''
+        AND id LIKE 'ext_%'
+        AND title IS NOT NULL
+        AND (publication_status IS NULL OR publication_status = 'draft');
+    `);
+
     logger.info('PostgreSQL: tables ready');
   } catch (err) {
     logger.error('PostgreSQL: failed to create tables', { error: err.message });
@@ -165,17 +195,17 @@ async function initDb() {
 
 /**
  * Insert a new track record.
- * @param {{ id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id, album, external_url, user_id }} track
+ * @param {{ id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id, album, external_url, user_id, publication_status, download_allowed }} track
  * @param {import('pg').PoolClient|import('pg').Pool} [client]
  */
 async function insertTrack(track, client = pool) {
-  const { id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id, album, external_url, user_id } = track;
+  const { id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id, album, external_url, user_id, publication_status, download_allowed } = track;
   const result = await client.query(
-    `INSERT INTO tracks (id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id, album, external_url, user_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    `INSERT INTO tracks (id, title, artist, duration, size, format, audio_key, cover_key, lyrics_key, provider, provider_track_id, album, external_url, user_id, publication_status, download_allowed)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
      RETURNING *`,
     [id, title, artist || null, duration || null, size || null, format || null,
-     audio_key || null, cover_key || null, lyrics_key || null, provider || 'local', provider_track_id || null, album || null, external_url || null, user_id || null]
+     audio_key || null, cover_key || null, lyrics_key || null, provider || 'local', provider_track_id || null, album || null, external_url || null, user_id || null, publication_status || 'draft', Boolean(download_allowed)]
   );
   return result.rows[0];
 }
@@ -448,5 +478,6 @@ module.exports = {
   updateUserProfile,
   getUserStorageUsage,
   withUserLock,
+  cleanupInvalidPlaylistTracks: (...args) => require('./playlists/db').cleanupInvalidPlaylistTracks(...args),
 };
 

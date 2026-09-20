@@ -54,7 +54,8 @@ app.use(helmet({
   },
 }));
 
-const { sessionMiddleware } = require('./auth/session');
+const { sessionMiddleware, resolveSessionUser, parseCookies, COOKIE_NAME } = require('./auth/session');
+const { unsign } = require('./auth/crypto');
 const oauthRoutes = require('./auth/oauthRoutes');
 
 app.use(cors({
@@ -69,6 +70,7 @@ app.use(express.json({ limit: '1mb' }));
 
 const authRoutes = require('./auth/authRoutes');
 const playlistRoutes = require('./playlists/routes');
+const catalogRoutes = require('./catalog/routes');
 
 // Mount Auth routes with session middleware
 app.use('/api/auth', sessionMiddleware, authRoutes);
@@ -76,6 +78,8 @@ app.use('/api/auth', sessionMiddleware, authRoutes);
 app.use('/api/music', sessionMiddleware, oauthRoutes);
 // Mount Playlist routes with session middleware
 app.use('/api/playlists', sessionMiddleware, playlistRoutes);
+// Mount Universal Music Catalog routes with session middleware
+app.use('/api/catalog', sessionMiddleware, catalogRoutes);
 
 // ─── Socket.io ────────────────────────────────────────────────────────────
 
@@ -84,6 +88,37 @@ const io = new Server(server, {
   maxHttpBufferSize: maxChunkMB * 1024 * 1024,
   pingTimeout: 20_000,
   pingInterval: 25_000,
+});
+
+// Socket.IO session middleware: extract authenticated user from cookie or resolve session
+io.use(async (socket, next) => {
+  try {
+    const cookies = parseCookies(socket.handshake.headers.cookie);
+    let userId = null;
+
+    if (cookies[COOKIE_NAME]) {
+      userId = unsign(cookies[COOKIE_NAME]);
+    }
+
+    // Check if auth token or userId provided (e.g. test runners or custom clients)
+    if (!userId && socket.handshake.auth?.token) {
+      userId = unsign(socket.handshake.auth.token);
+    } else if (!userId && socket.handshake.auth?.userId) {
+      userId = socket.handshake.auth.userId;
+    }
+
+    // If still no userId, follow existing session establishment model
+    if (!userId) {
+      const session = await resolveSessionUser(socket.handshake.headers.cookie);
+      userId = session.userId;
+    }
+
+    socket.userId = userId;
+    next();
+  } catch (err) {
+    logger.error('Socket authentication error', { error: err.message });
+    next(new Error('Authentication failed'));
+  }
 });
 
 const roomManager = new RoomManager();
@@ -146,6 +181,7 @@ const upload = multer({
 
 app.post(
   '/api/rooms/:roomId/chunks',
+  sessionMiddleware,
   apiLimiter,
   uploadLimiter,
   validateRoomId,
@@ -159,8 +195,20 @@ app.post(
 
     if (!room) return res.status(404).json({ error: 'Room not found' });
 
+    // Host authority check: strictly based on authenticated userId
+    if (!room.isHost(req.userId)) {
+      return res.status(403).json({ error: 'Forbidden: Only the room host can upload temporary chunks' });
+    }
+
     const idx = parseInt(chunkIndex, 10);
-    room.addChunk(idx, req.file.buffer, mimeType);
+    try {
+      room.addChunk(idx, req.file.buffer, mimeType);
+    } catch (err) {
+      if (err.status === 413) {
+        return res.status(413).json({ error: err.message });
+      }
+      throw err;
+    }
 
     if (songName && !room.state.songName) room.setState({ songName });
     if (totalChunks)  room.setState({ totalChunks: parseInt(totalChunks, 10) });
@@ -583,6 +631,7 @@ app.get('/api/library/covers/:filename', async (req, res) => {
 
 app.get(
   '/api/rooms/:roomId/chunks/:chunkIndex',
+  sessionMiddleware,
   validateRoomId,
   validateChunkIndex,
   async (req, res) => {
@@ -590,6 +639,11 @@ app.get(
     const room  = roomManager.getRoom(roomId);
 
     if (!room) return res.status(404).json({ error: 'Room not found' });
+
+    // Room membership check: strictly based on authenticated userId
+    if (!room.isMember(req.userId)) {
+      return res.status(403).json({ error: 'Forbidden: Must be a room participant to access media' });
+    }
 
     const idx = parseInt(chunkIndex, 10);
 
@@ -650,7 +704,30 @@ app.use((err, _req, res, _next) => {
 // ─── Socket.io Room Logic ─────────────────────────────────────────────────
 
 io.on('connection', (socket) => {
-  logger.info('Socket connected', { socketId: socket.id });
+  logger.info('Socket connected', { socketId: socket.id, userId: socket.userId });
+
+  // Helper to verify host authority strictly via authenticated userId
+  function requireHost(roomId, actionName) {
+    if (!roomId) {
+      socket.emit('room:error', { message: 'Invalid room ID.' });
+      return null;
+    }
+    const room = roomManager.getRoom(roomId.toUpperCase());
+    if (!room) {
+      socket.emit('room:error', { message: 'Room not found' });
+      return null;
+    }
+    if (!room.isHost(socket.userId)) {
+      logger.warn(`Unauthorized host action attempted: ${actionName}`, {
+        roomId: roomId.toUpperCase(),
+        userId: socket.userId,
+        hostUserId: room.hostUserId
+      });
+      socket.emit('room:error', { message: 'Unauthorized: Only the room host can perform this action.' });
+      return null;
+    }
+    return room;
+  }
 
   // ── Join Room ──────────────────────────────────────────────────────────
   socket.on('room:join', ({ roomId, role, displayName }) => {
@@ -660,37 +737,65 @@ io.on('connection', (socket) => {
       return;
     }
 
-    let room = roomManager.getRoom(roomId.toUpperCase());
+    const normalizedRoomId = roomId.toUpperCase();
+    let room = roomManager.getRoom(normalizedRoomId);
 
-    if (!room && role === 'host') {
-      room = roomManager.createRoom(roomId.toUpperCase());
-    }
-
+    // If room does not exist, only an authenticated user requesting host role can create it
     if (!room) {
-      socket.emit('room:error', { message: 'Room not found. Ask the host to create one first.' });
-      return;
+      if (role === 'host') {
+        room = roomManager.createRoom(normalizedRoomId, socket.userId, socket.id);
+      } else {
+        socket.emit('room:error', { message: 'Room not found. Ask the host to create one first.' });
+        return;
+      }
     }
 
-    socket.join(roomId.toUpperCase());
-    roomManager.addMemberToRoom(roomId.toUpperCase(), socket.id, { role, displayName });
+    // Room exists: Determine server-authoritative role
+    let authoritativeRole = 'viewer';
+    if (room.isHost(socket.userId)) {
+      authoritativeRole = 'host';
+      room.hostSocketId = socket.id; // Update connection socket ID on reconnect
+    } else if (role === 'host') {
+      // Client claimed to be host, but socket.userId is NOT the room's host!
+      // Server rejects host claim and downgrades to viewer
+      logger.warn('Non-host tried to join as host; downgraded to viewer', {
+        roomId: normalizedRoomId,
+        userId: socket.userId,
+        hostUserId: room.hostUserId
+      });
+      authoritativeRole = 'viewer';
+    }
+
+    socket.join(normalizedRoomId);
+    roomManager.addMemberToRoom(normalizedRoomId, socket.id, {
+      userId: socket.userId,
+      role: authoritativeRole,
+      displayName
+    });
 
     const state = room.getState();
-    socket.emit('room:joined', { roomId: roomId.toUpperCase(), role, state });
+    socket.emit('room:joined', { roomId: normalizedRoomId, role: authoritativeRole, state });
 
-    socket.to(roomId.toUpperCase()).emit('room:member_joined', {
+    socket.to(normalizedRoomId).emit('room:member_joined', {
       socketId: socket.id,
       displayName,
-      role,
+      role: authoritativeRole,
       memberCount: room.getMemberCount(),
       members: room.getMembersArray(),
     });
 
-    logger.info('Member joined room', { roomId, displayName, role, members: room.getMemberCount() });
+    logger.info('Member joined room', {
+      roomId: normalizedRoomId,
+      userId: socket.userId,
+      displayName,
+      role: authoritativeRole,
+      members: room.getMemberCount()
+    });
   });
 
   // ── Host: Load Library Track ──────────────────────────────────────────
   socket.on('host:load_library_track', async ({ roomId, trackId }) => {
-    const room = roomManager.getRoom(roomId);
+    const room = requireHost(roomId, 'load_library_track');
     if (!room) return;
 
     const track = libraryManager.getTrack(trackId);
@@ -744,7 +849,7 @@ io.on('connection', (socket) => {
   // ── Host: Update Track Metadata ──
   socket.on('host:update_track_metadata', (data) => {
     const { roomId, ...metadata } = data;
-    const room = roomManager.getRoom(roomId);
+    const room = requireHost(roomId, 'update_track_metadata');
     if (!room) return;
 
     const updates = {};
@@ -766,7 +871,7 @@ io.on('connection', (socket) => {
 
   // ── Host: Update Queue ──
   socket.on('host:update_queue', ({ roomId, queue, currentQueueIndex }) => {
-    const room = roomManager.getRoom(roomId);
+    const room = requireHost(roomId, 'update_queue');
     if (!room) return;
 
     room.setState({
@@ -780,7 +885,7 @@ io.on('connection', (socket) => {
 
   // ── Host: Play ────────────────────────────────────────────────────────
   socket.on('host:play', ({ roomId, currentTime, chunkIndex }) => {
-    const room = roomManager.getRoom(roomId);
+    const room = requireHost(roomId, 'play');
     if (!room) return;
 
     // Schedule 250ms ahead so all clients can buffer and start together
@@ -793,7 +898,7 @@ io.on('connection', (socket) => {
 
   // ── Host: Pause ───────────────────────────────────────────────────────
   socket.on('host:pause', ({ roomId, currentTime }) => {
-    const room = roomManager.getRoom(roomId);
+    const room = requireHost(roomId, 'pause');
     if (!room) return;
 
     room.setState({ isPlaying: false, currentTime, scheduledStartTime: null });
@@ -803,7 +908,7 @@ io.on('connection', (socket) => {
 
   // ── Host: Seek ────────────────────────────────────────────────────────
   socket.on('host:seek', ({ roomId, currentTime, chunkIndex }) => {
-    const room = roomManager.getRoom(roomId);
+    const room = requireHost(roomId, 'seek');
     if (!room) return;
 
     const updates = { currentTime, chunkIndex };
@@ -819,7 +924,7 @@ io.on('connection', (socket) => {
 
   // ── Host: Chunk playing (trigger GC) ─────────────────────────────────
   socket.on('host:chunk_playing', ({ roomId, chunkIndex }) => {
-    const room = roomManager.getRoom(roomId);
+    const room = requireHost(roomId, 'chunk_playing');
     if (room) room.gcOldChunks(chunkIndex);
   });
 

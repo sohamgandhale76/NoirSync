@@ -52,30 +52,42 @@ function clearSessionCookie(res) {
 }
 
 /**
+ * Resolves a persistent user ID from cookies or creates a new guest user.
+ * Reusable across HTTP middleware and Socket.IO connection handlers.
+ */
+async function resolveSessionUser(cookieHeader) {
+  const cookies = parseCookies(cookieHeader);
+  let userId = null;
+
+  if (cookies[COOKIE_NAME]) {
+    userId = unsign(cookies[COOKIE_NAME]);
+  }
+
+  if (!userId) {
+    // Create new user ID
+    userId = uuidv4();
+
+    // Ensure users table exists and insert this user
+    const db = require('../db');
+    await db.pool.query(
+      'INSERT INTO users (id, created_at, is_guest) VALUES ($1, $2, true) ON CONFLICT (id) DO NOTHING',
+      [userId, Date.now()]
+    );
+    return { userId, isNew: true };
+  }
+
+  return { userId, isNew: false };
+}
+
+/**
  * Middleware to ensure the request is associated with a persistent user ID.
  * If no valid session cookie exists, one is created and set.
  */
 async function sessionMiddleware(req, res, next) {
   try {
-    const cookies = parseCookies(req.headers.cookie);
-    let userId = null;
+    const { userId, isNew } = await resolveSessionUser(req.headers.cookie);
 
-    if (cookies[COOKIE_NAME]) {
-      userId = unsign(cookies[COOKIE_NAME]);
-    }
-
-    if (!userId) {
-      // Create new user ID
-      userId = uuidv4();
-      
-      // Ensure users table exists and insert this user
-      const db = require('../db');
-      await db.pool.query(
-        'INSERT INTO users (id, created_at, is_guest) VALUES ($1, $2, true) ON CONFLICT (id) DO NOTHING',
-        [userId, Date.now()]
-      );
-
-      // Set cookie
+    if (isNew) {
       setSessionCookie(res, userId);
     }
 
@@ -99,6 +111,7 @@ async function sessionMiddleware(req, res, next) {
 module.exports = {
   COOKIE_NAME,
   sessionMiddleware,
+  resolveSessionUser,
   parseCookies,
   setSessionCookie,
   clearSessionCookie

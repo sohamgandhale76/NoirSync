@@ -15,6 +15,7 @@ import { toMseMimeType, CHUNK_DURATION } from '../lib/chunker';
 import { SERVER_URL } from '../lib/constants';
 import { Library } from './Library';
 import { PlaylistBrowser } from './PlaylistBrowser';
+import { UniversalMusicView } from './UniversalMusicView';
 import { Button } from './ui/Button';
 
 import { getServerTime } from '../lib/ntp';
@@ -55,8 +56,8 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
   const [currentTime, setCurrentTime] = useState(0);
   const [buffering, setBuffering]      = useState(true);
   const [mseError, setMseError]        = useState<string | null>(null);
-  const [activeTab, setActiveTab]      = useState<'player' | 'library' | 'playlists'>('player');
-  const [mobileTab, setMobileTab]      = useState<'player' | 'lyrics' | 'library' | 'playlists'>('player');
+  const [activeTab, setActiveTab]      = useState<'player' | 'library' | 'universal' | 'playlists'>('player');
+  const [mobileTab, setMobileTab]      = useState<'player' | 'lyrics' | 'library' | 'universal' | 'playlists'>('player');
   const [viewMode, setViewMode]        = useState<'r2' | 'playlists'>('r2');
   const [localPlaying, setLocalPlaying] = useState(false);
   const [bufferedPercent, setBufferedPercent] = useState(0);
@@ -161,7 +162,7 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
 
     try {
       const url = `${SERVER_URL || ''}/api/rooms/${roomId}/chunks/${idx}`;
-      const res = await fetch(url);
+      const res = await fetch(url, { credentials: 'include' });
       if (!res.ok) {
         if (res.status === 404) {
           downloadedRef.current.delete(idx); // retry later
@@ -403,7 +404,7 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                   : 'text-noir-dim hover:text-noir-white'
               }`}
             >
-              🎛 Player
+              📻 Room
             </button>
             <button
               onClick={() => setActiveTab('library')}
@@ -413,7 +414,17 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                   : 'text-noir-dim hover:text-noir-white'
               }`}
             >
-              📚 Library
+              ☁ Cloud
+            </button>
+            <button
+              onClick={() => setActiveTab('universal')}
+              className={`flex-1 py-3 text-xs font-mono tracking-wider transition-colors ${
+                activeTab === 'universal'
+                  ? 'text-accent-gold border-b-2 border-accent-gold bg-noir-charcoal/20'
+                  : 'text-noir-dim hover:text-noir-white'
+              }`}
+            >
+              🌐 Universal
             </button>
             <button
               onClick={() => setActiveTab('playlists')}
@@ -637,6 +648,15 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                   </div>
                 </div>
               </>
+            ) : activeTab === 'universal' ? (
+              <div className="space-y-4">
+                <div className="text-center py-4 px-4 border border-dashed border-noir-border rounded-xl">
+                  <p className="font-ui text-sm text-noir-ash">🌐 Universal Music</p>
+                  <p className="font-mono text-[10px] text-noir-dim mt-1">
+                    Search and browse multi-provider catalog. Add to playlists or explore music.
+                  </p>
+                </div>
+              </div>
             ) : activeTab === 'playlists' ? (
               <div className="space-y-4">
                 <div className="text-center py-4 px-4 border border-dashed border-noir-border rounded-xl">
@@ -661,7 +681,9 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
 
         {/* ── Right: main content area ────────────────────────────────────── */}
         <main className="flex-1 flex flex-col overflow-hidden">
-          {activeTab === 'playlists' ? (
+          {activeTab === 'universal' ? (
+            <UniversalMusicView />
+          ) : activeTab === 'playlists' ? (
             <div className="flex-1 p-8 overflow-y-auto z-10">
               <div className="max-w-4xl mx-auto space-y-6">
                 <div>
@@ -993,6 +1015,12 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
           </div>
         )}
 
+        {mobileTab === 'universal' && (
+          <div className="h-[calc(100vh-8rem)]">
+            <UniversalMusicView />
+          </div>
+        )}
+
         {mobileTab === 'playlists' && (
           <div className="space-y-4">
             <div className="text-center py-4 px-4 border border-dashed border-noir-border rounded-xl">
@@ -1072,8 +1100,17 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
             mobileTab === 'library' ? 'text-accent-gold' : 'text-noir-dim hover:text-noir-white'
           }`}
         >
-          <span className="text-lg">📚</span>
-          <span>Library</span>
+          <span className="text-lg">☁</span>
+          <span>Cloud</span>
+        </button>
+        <button
+          onClick={() => setMobileTab('universal')}
+          className={`flex flex-col items-center justify-center gap-1 text-[10px] font-mono tracking-wider transition-colors ${
+            mobileTab === 'universal' ? 'text-accent-gold' : 'text-noir-dim hover:text-noir-white'
+          }`}
+        >
+          <span className="text-lg">🌐</span>
+          <span>Universal</span>
         </button>
         <button
           onClick={() => setMobileTab('playlists')}

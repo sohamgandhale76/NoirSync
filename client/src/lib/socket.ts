@@ -13,6 +13,7 @@ export function getSocket(): Socket {
       transports: ['websocket', 'polling'], // websocket preferred, polling fallback
       autoConnect: false,
       reconnection: true,
+      withCredentials: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 1_000,
       reconnectionDelayMax: 5_000,

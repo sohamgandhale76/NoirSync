@@ -52,7 +52,8 @@ async function runRegression() {
       format: 'flac',
       provider: 'local',
       provider_track_id: null,
-      external_url: null
+      external_url: null,
+      user_id: userA
     });
 
     const localTrack2 = await db.insertTrack({
@@ -65,7 +66,8 @@ async function runRegression() {
       format: 'mp3',
       provider: 'local',
       provider_track_id: null,
-      external_url: null
+      external_url: null,
+      user_id: userA
     });
 
     console.log('PASS: Test users and canonical tracks seeded.');
@@ -296,7 +298,8 @@ async function runRegression() {
         id: `trk_conc_${i}_${Date.now()}`,
         title: `Concurrent Song ${i}`,
         duration: 100 + i,
-        provider: 'local'
+        provider: 'local',
+        user_id: userA
       });
       concTrackIds.push(trk.id);
     }
@@ -452,8 +455,8 @@ async function runRegression() {
     console.log('PASS: Playlist cleanly translates into room queue structure.');
 
     // Cleanup test data
+    await db.pool.query('DELETE FROM tracks WHERE id IN ($1, $2) OR user_id IN ($3, $4)', [localTrack1.id, localTrack2.id, userA, userB]);
     await db.pool.query('DELETE FROM users WHERE id IN ($1, $2)', [userA, userB]);
-    await db.pool.query('DELETE FROM tracks WHERE id IN ($1, $2)', [localTrack1.id, localTrack2.id]);
 
     console.log('\n=== ALL PHASE 4 PLAYLIST REGRESSION CHECKS PASSED 100% ===\n');
     process.exit(0);

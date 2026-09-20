@@ -28,16 +28,17 @@ async function resolveProviderTrack(providerTrack) {
   // Actually, standard `ON CONFLICT (provider, provider_track_id) WHERE provider_track_id IS NOT NULL` is valid PG syntax.
 
   const query = `
-    INSERT INTO tracks (id, title, artist, duration, provider, provider_track_id, cover_key, album, external_url)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    INSERT INTO tracks (id, title, artist, duration, provider, provider_track_id, cover_key, album, external_url, publication_status)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'published')
     ON CONFLICT (provider, provider_track_id) WHERE provider_track_id IS NOT NULL
     DO UPDATE SET 
-      title = EXCLUDED.title,
-      artist = EXCLUDED.artist,
-      duration = EXCLUDED.duration,
-      cover_key = EXCLUDED.cover_key,
-      album = COALESCE(EXCLUDED.album, tracks.album),
-      external_url = COALESCE(EXCLUDED.external_url, tracks.external_url)
+      title = COALESCE(tracks.title, EXCLUDED.title),
+      artist = COALESCE(tracks.artist, EXCLUDED.artist),
+      duration = COALESCE(tracks.duration, EXCLUDED.duration),
+      cover_key = COALESCE(tracks.cover_key, EXCLUDED.cover_key),
+      album = COALESCE(tracks.album, EXCLUDED.album),
+      external_url = COALESCE(tracks.external_url, EXCLUDED.external_url),
+      publication_status = 'published'
     RETURNING *;
   `;
 
