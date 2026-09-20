@@ -2,6 +2,8 @@ import { useState, useCallback, useEffect } from 'react';
 import { GlassPanel } from './ui/GlassPanel';
 import { Button } from './ui/Button';
 import { GlowSpotlight } from './GlowSpotlight';
+import { useAuth } from '../hooks/useAuth';
+import { AccountBadge } from './AccountBadge';
 
 interface Props {
   onJoin: (role: 'host' | 'viewer', roomId: string, displayName: string) => void;
@@ -13,10 +15,18 @@ function generateRoomId(): string {
 }
 
 export function RoomLobby({ onJoin }: Props) {
+  const { user, isAuthenticated, login, register, logout } = useAuth();
   const [name, setName]       = useState('');
   const [roomId, setRoomId]   = useState('');
   const [mode, setMode]       = useState<'host' | 'viewer'>('host');
   const [roomIdError, setRoomIdError] = useState('');
+
+  // Pre-fill display name when user logs in
+  useEffect(() => {
+    if (user?.displayName || user?.username) {
+      setName(user.displayName || user.username || '');
+    }
+  }, [user]);
 
   // Pre-fill room ID from URL param (for shared invite links)
   useEffect(() => {
@@ -60,6 +70,17 @@ export function RoomLobby({ onJoin }: Props) {
       onKeyDown={handleKeyDown}
     >
       <GlowSpotlight />
+
+      {/* Top right account badge */}
+      <div className="absolute top-6 right-6 z-30 animate-fade-in">
+        <AccountBadge
+          user={user}
+          isAuthenticated={isAuthenticated}
+          onLogin={login}
+          onRegister={register}
+          onLogout={logout}
+        />
+      </div>
 
       {/* Background decorative text */}
       <div

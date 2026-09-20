@@ -20,6 +20,37 @@ function parseCookies(cookieHeader) {
   return list;
 }
 
+function setSessionCookie(res, userId) {
+  const signedId = sign(userId);
+  const isProduction = process.env.NODE_ENV === 'production';
+  const cookieOptions = [
+    `${COOKIE_NAME}=${encodeURIComponent(signedId)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${60 * 60 * 24 * 365}` // 1 year
+  ];
+  if (isProduction) {
+    cookieOptions.push('Secure');
+  }
+  res.setHeader('Set-Cookie', cookieOptions.join('; '));
+}
+
+function clearSessionCookie(res) {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const cookieOptions = [
+    `${COOKIE_NAME}=`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0'
+  ];
+  if (isProduction) {
+    cookieOptions.push('Secure');
+  }
+  res.setHeader('Set-Cookie', cookieOptions.join('; '));
+}
+
 /**
  * Middleware to ensure the request is associated with a persistent user ID.
  * If no valid session cookie exists, one is created and set.
@@ -38,31 +69,27 @@ async function sessionMiddleware(req, res, next) {
       userId = uuidv4();
       
       // Ensure users table exists and insert this user
-      // We will lazily insert it if db module allows, or let the caller handle it.
-      // Better to insert it immediately to ensure it exists for foreign keys.
       const db = require('../db');
       await db.pool.query(
-        'INSERT INTO users (id, created_at) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING',
+        'INSERT INTO users (id, created_at, is_guest) VALUES ($1, $2, true) ON CONFLICT (id) DO NOTHING',
         [userId, Date.now()]
       );
 
       // Set cookie
-      const signedId = sign(userId);
-      const isProduction = process.env.NODE_ENV === 'production';
-      const cookieOptions = [
-        `${COOKIE_NAME}=${encodeURIComponent(signedId)}`,
-        'Path=/',
-        'HttpOnly',
-        'SameSite=Lax',
-        `Max-Age=${60 * 60 * 24 * 365}` // 1 year
-      ];
-      if (isProduction) {
-        cookieOptions.push('Secure');
-      }
-      res.setHeader('Set-Cookie', cookieOptions.join('; '));
+      setSessionCookie(res, userId);
     }
 
     req.userId = userId;
+
+    // Attach full user record for downstream checks (e.g., is_guest)
+    try {
+      const db = require('../db');
+      const user = await db.getUserById(userId);
+      req.user = user || null;
+    } catch (e) {
+      req.user = null;
+    }
+
     next();
   } catch (err) {
     next(err);
@@ -70,6 +97,10 @@ async function sessionMiddleware(req, res, next) {
 }
 
 module.exports = {
+  COOKIE_NAME,
   sessionMiddleware,
-  parseCookies
+  parseCookies,
+  setSessionCookie,
+  clearSessionCookie
 };
+

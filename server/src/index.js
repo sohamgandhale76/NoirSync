@@ -67,8 +67,11 @@ app.use(cors({
 app.use(compression());
 app.use(express.json({ limit: '1mb' }));
 
+const authRoutes = require('./auth/authRoutes');
 const playlistRoutes = require('./playlists/routes');
 
+// Mount Auth routes with session middleware
+app.use('/api/auth', sessionMiddleware, authRoutes);
 // Mount OAuth routes with session middleware
 app.use('/api/music', sessionMiddleware, oauthRoutes);
 // Mount Playlist routes with session middleware
@@ -131,7 +134,7 @@ const musicRoutes     = require('./music/routes');
 
 // Mounted at /library (separate from legacy /api/library Telegram routes)
 // Provides clean Postgres DB queries for client components
-app.use('/library', libraryRoutes);
+app.use('/library', sessionMiddleware, libraryRoutes);
 app.use('/api/music', musicRoutes);
 
 // ─── Chunk Upload ─────────────────────────────────────────────────────────

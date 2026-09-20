@@ -43,3 +43,15 @@ export interface Playlist {
     track_count: number;
     tracks?: PlaylistTrack[];
 }
+
+export interface User {
+    id: string;
+    email: string | null;
+    username: string | null;
+    displayName: string | null;
+    avatarUrl: string | null;
+    isGuest: boolean;
+    createdAt: number | null;
+    updatedAt: number | null;
+}
+

@@ -18,6 +18,8 @@ import { parseLrc, type LrcLine, type LrcMeta } from '../lib/lrcParser';
 import { SERVER_URL } from '../lib/constants';
 import { getSocket } from '../lib/socket';
 import { LocalPlaybackAdapter } from '../lib/playback/LocalPlaybackAdapter';
+import { useAuth } from '../hooks/useAuth';
+import { AccountBadge } from './AccountBadge';
 
 interface Props {
   roomId: string;
@@ -46,6 +48,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     emitUpdateTrackMetadata,
   } = useRoom(roomId, 'host', displayName);
   const toast = useToast();
+  const { user: authUser, isAuthenticated, login, register, logout } = useAuth();
 
   const sortedMembers = [...(roomState.members || [])].sort((a, b) => {
     if (a.role === 'host' && b.role !== 'host') return -1;
@@ -734,14 +737,23 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
             <span className="font-display text-xl text-accent-gold">NoirSync</span>
             <span className="text-noir-dim">·</span>
             <span className="font-mono text-xs text-noir-ash tracking-widest">HOST</span>
-            <div className="ml-auto flex items-center gap-2">
-              <div
-                className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`}
-                title={connected ? 'Connected' : 'Disconnected'}
+            <div className="ml-auto flex items-center gap-3">
+              <AccountBadge
+                user={authUser}
+                isAuthenticated={isAuthenticated}
+                onLogin={login}
+                onRegister={register}
+                onLogout={logout}
               />
-              <span className="font-mono text-[10px] text-noir-dim">
-                {connected ? 'LIVE' : 'OFFLINE'}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <div
+                  className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`}
+                  title={connected ? 'Connected' : 'Disconnected'}
+                />
+                <span className="font-mono text-[10px] text-noir-dim">
+                  {connected ? 'LIVE' : 'OFFLINE'}
+                </span>
+              </div>
             </div>
           </div>
 

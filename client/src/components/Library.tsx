@@ -5,6 +5,8 @@ import { GlassPanel } from './ui/GlassPanel';
 import { Spinner } from './ui/Spinner';
 import { useMusicSearch } from '../hooks/useMusicSearch';
 import { useSpotifyAuth } from '../hooks/useSpotifyAuth';
+import { useAuth } from '../hooks/useAuth';
+import { AuthModal } from './AuthModal';
 import { ProviderTrack } from '../lib/music/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -29,6 +31,7 @@ interface StorageStats {
   limitGB: string;
   percentUsed: string;
   isFull: boolean;
+  isGuest?: boolean;
 }
 
 interface LibraryProps {
@@ -115,7 +118,7 @@ function StorageBar({ storage }: { storage: StorageStats | null }) {
       <div className="flex items-center gap-2 shrink-0">
         <span className="text-accent-gold text-sm">☁</span>
         <span className="font-ui text-xs font-semibold uppercase tracking-wider text-noir-silver">
-          R2 Storage
+          {storage.isGuest ? 'Cloud Storage (Guest)' : 'My Cloud Storage'}
         </span>
       </div>
       <div className="flex-1 min-w-[140px] h-2 bg-noir-graphite rounded-full overflow-hidden border border-noir-border/40">
@@ -307,7 +310,17 @@ function NowPlayingBars() {
 
 // ─── Upload Form (sidebar) ────────────────────────────────────────────────────
 
-function UploadSidebar({ onUploaded, isFull }: { onUploaded: () => void; isFull: boolean }) {
+function UploadSidebar({
+  onUploaded,
+  isFull,
+  isGuest = false,
+  onOpenAuth,
+}: {
+  onUploaded: () => void;
+  isFull: boolean;
+  isGuest?: boolean;
+  onOpenAuth?: () => void;
+}) {
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [lyricsFile, setLyricsFile] = useState<File | null>(null);
@@ -348,6 +361,10 @@ function UploadSidebar({ onUploaded, isFull }: { onUploaded: () => void; isFull:
   // ── Direct-to-R2 XHR PUT helper ──────────────────────────────────────────────
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isGuest) {
+      setError('Please create an account or sign in to upload tracks.');
+      return;
+    }
     if (!audioFile) { setError('Please select an audio file.'); return; }
     setUploading(true); setError(null); setProgress(1);
 
@@ -361,6 +378,7 @@ function UploadSidebar({ onUploaded, isFull }: { onUploaded: () => void; isFull:
 
     const xhr = new XMLHttpRequest();
     xhr.timeout = 600_000; // 10 minutes (matches the server timeout)
+    xhr.withCredentials = true;
     xhr.open('POST', `${base}/library/upload`);
 
     xhr.upload.onprogress = (ev) => {
@@ -369,6 +387,10 @@ function UploadSidebar({ onUploaded, isFull }: { onUploaded: () => void; isFull:
 
     xhr.onload = () => {
       setUploading(false);
+      if (xhr.status === 403) {
+        setError('Permanent account required to upload to Cloud Library.');
+        return;
+      }
       if (xhr.status === 507) { setError('Storage full — delete some tracks first.'); return; }
       if (xhr.status < 200 || xhr.status >= 300) {
         try { setError((JSON.parse(xhr.responseText) as { error: string }).error || 'Upload failed'); }
@@ -387,12 +409,34 @@ function UploadSidebar({ onUploaded, isFull }: { onUploaded: () => void; isFull:
       {/* Header */}
       <div className="space-y-1">
         <p className="font-ui text-xs font-semibold text-accent-gold uppercase tracking-wider flex items-center gap-1.5">
-          <span>⬆</span> Upload to Library
+          <span>⬆</span> Upload to My Cloud Library
         </p>
         <p className="font-ui text-xs text-noir-ash">
-          Add tracks to your persistent cloud R2 storage
+          Add tracks to your private cloud storage
         </p>
       </div>
+
+      {/* Guest notice banner */}
+      {isGuest && (
+        <div className="p-3.5 rounded-xl border border-accent-gold/40 bg-accent-gold/5 flex flex-col gap-2">
+          <div className="flex items-center gap-1.5 text-accent-gold">
+            <span className="text-sm">🔒</span>
+            <p className="font-ui text-xs font-semibold uppercase tracking-wider">Account Required</p>
+          </div>
+          <p className="font-ui text-xs text-noir-ash leading-relaxed">
+            Create a free NoirSync account to upload and permanently save music to your private Cloud Library.
+          </p>
+          {onOpenAuth && (
+            <button
+              type="button"
+              onClick={onOpenAuth}
+              className="btn-noir px-3 py-1.5 rounded-lg border-accent-gold/50 text-accent-gold hover:bg-accent-gold/10 text-xs font-semibold transition-all mt-1 cursor-pointer"
+            >
+              Create Account / Sign In
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Drag-and-drop zone */}
       <div
@@ -521,9 +565,9 @@ function UploadSidebar({ onUploaded, isFull }: { onUploaded: () => void; isFull:
       <div className="space-y-2">
         <button
           type="submit"
-          disabled={uploading || isFull || !audioFile}
+          disabled={uploading || isFull || !audioFile || isGuest}
           className={`w-full py-3 px-4 rounded-lg font-ui text-xs font-semibold uppercase tracking-wider transition-all duration-200 relative overflow-hidden flex items-center justify-center gap-2 ${
-            uploading || isFull || !audioFile
+            uploading || isFull || !audioFile || isGuest
               ? 'bg-noir-graphite border border-noir-border text-noir-dim cursor-not-allowed opacity-60'
               : 'btn-noir btn-gold shadow-md hover:brightness-105 cursor-pointer'
           }`}
@@ -540,6 +584,8 @@ function UploadSidebar({ onUploaded, isFull }: { onUploaded: () => void; isFull:
                 <Spinner size="sm" />
                 <span>{progress > 0 ? `Uploading… ${progress}%` : 'Starting…'}</span>
               </>
+            ) : isGuest ? (
+              'Permanent Account Required'
             ) : isFull ? (
               'Storage Full'
             ) : audioFile ? (
@@ -1029,6 +1075,11 @@ interface ModalTrackData {
 }
 
 export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
+  const { user, login: authLogin, register: authRegister } = useAuth();
+  const isGuest = !user || user.isGuest;
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalTab, setAuthModalTab] = useState<'login' | 'register'>('register');
+
   const [libraryTab, setLibraryTab] = useState<'cloud' | 'spotify'>('cloud');
   const [tracks, setTracks] = useState<R2Track[]>([]);
   const [storage, setStorage] = useState<StorageStats | null>(null);
@@ -1041,11 +1092,18 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const base = SERVER_URL || '';
 
+  const handleOpenAuth = useCallback((tab: 'login' | 'register' = 'register') => {
+    setAuthModalTab(tab);
+    setAuthModalOpen(true);
+  }, []);
+
   const fetchTracks = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${base}/library?t=${Date.now()}`);
-      if (!res.ok) throw new Error('Failed to load R2 library');
+      const res = await fetch(`${base}/library?t=${Date.now()}`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Failed to load Cloud Library');
       const data = await res.json();
       const tracksArray = Array.isArray(data) ? data : (data?.tracks ?? []);
       setTracks(tracksArray);
@@ -1058,7 +1116,9 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
 
   const fetchStorage = useCallback(async () => {
     try {
-      const res = await fetch(`${base}/library/storage?t=${Date.now()}`);
+      const res = await fetch(`${base}/library/storage?t=${Date.now()}`, {
+        credentials: 'include',
+      });
       if (res.ok) setStorage(await res.json() as StorageStats);
     } catch { /* non-fatal */ }
   }, [base]);
@@ -1067,7 +1127,9 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
 
   const handlePlay = useCallback(async (track: R2Track) => {
     try {
-      const res = await fetch(`${base}/library/${track.id}/stream`);
+      const res = await fetch(`${base}/library/${track.id}/stream`, {
+        credentials: 'include',
+      });
       if (!res.ok) throw new Error('Could not get stream URL');
       const { url } = await res.json() as { url: string };
 
@@ -1093,9 +1155,12 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
   }, [base, onSelectTrack, onLoadToRoom, playingId]);
 
   const handleDelete = useCallback(async (id: string) => {
-    if (!window.confirm('Delete this track from the R2 library?')) return;
+    if (!window.confirm('Delete this track from your Cloud Library?')) return;
     try {
-      const res = await fetch(`${base}/library/${id}`, { method: 'DELETE' });
+      const res = await fetch(`${base}/library/${id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
       if (!res.ok) throw new Error('Delete failed');
       if (playingId === id && audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; setPlayingId(null); }
       setTracks((prev) => prev.filter((t) => t.id !== id));
@@ -1109,6 +1174,7 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
       form.append('lyrics', file);
       const res = await fetch(`${base}/library/${track.id}/lyrics`, {
         method: 'POST',
+        credentials: 'include',
         body: form,
       });
       if (!res.ok) {
@@ -1174,7 +1240,7 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
               }`}
             >
               <span>☁</span>
-              <span>Cloud Tracks</span>
+              <span>My Cloud Library</span>
             </button>
             <button
               onClick={() => setLibraryTab('spotify')}
@@ -1287,6 +1353,8 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
                 <UploadSidebar
                   onUploaded={handleUploaded}
                   isFull={storage?.isFull ?? false}
+                  isGuest={isGuest}
+                  onOpenAuth={() => handleOpenAuth('register')}
                 />
               </div>
             </div>
@@ -1301,6 +1369,14 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
         track={playlistModalTrack}
         isOpen={!!playlistModalTrack}
         onClose={() => setPlaylistModalTrack(null)}
+      />
+
+      <AuthModal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        defaultTab={authModalTab}
+        onLogin={authLogin}
+        onRegister={authRegister}
       />
     </>
   );

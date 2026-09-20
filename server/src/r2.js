@@ -147,6 +147,40 @@ async function getUploadUrl(key, contentType, expiresIn = 3600) {
   return getSignedUrl(s3, cmd, { expiresIn });
 }
 
+const PER_USER_STORAGE_LIMIT_BYTES = parseInt(process.env.PER_USER_STORAGE_LIMIT_BYTES || '', 10) || (2 * 1024 * 1024 * 1024); // 2 GiB default
+
+/**
+ * Generate user-scoped R2 object key for audio.
+ * @param {string} userId
+ * @param {string} trackId
+ * @param {string} ext
+ * @returns {string}
+ */
+function getUserAudioKey(userId, trackId, ext) {
+  return `users/${userId}/audio/${trackId}.${ext}`;
+}
+
+/**
+ * Generate user-scoped R2 object key for cover art.
+ * @param {string} userId
+ * @param {string} trackId
+ * @param {string} ext
+ * @returns {string}
+ */
+function getUserCoverKey(userId, trackId, ext) {
+  return `users/${userId}/covers/${trackId}.${ext}`;
+}
+
+/**
+ * Generate user-scoped R2 object key for lyrics.
+ * @param {string} userId
+ * @param {string} trackId
+ * @returns {string}
+ */
+function getUserLyricsKey(userId, trackId) {
+  return `users/${userId}/lyrics/${trackId}.lrc`;
+}
+
 module.exports = {
   uploadToR2,
   getStreamUrl,
@@ -156,4 +190,8 @@ module.exports = {
   deleteFromR2,
   getTotalStorageUsed,
   checkStorageLimit,
+  PER_USER_STORAGE_LIMIT_BYTES,
+  getUserAudioKey,
+  getUserCoverKey,
+  getUserLyricsKey,
 };

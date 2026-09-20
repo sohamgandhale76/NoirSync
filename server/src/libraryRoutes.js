@@ -1,6 +1,7 @@
 // ─── R2 Music Library Router ──────────────────────────────────────────────────
 // Mounts at /library in index.js
-// All new persistent-library endpoints backed by Cloudflare R2 + PostgreSQL.
+// User-owned Cloud Library backed by Cloudflare R2 + PostgreSQL.
+// All operations are strictly scoped to the authenticated user (tracks.user_id = req.userId).
 
 const express = require('express');
 const multer  = require('multer');
@@ -9,11 +10,12 @@ const path    = require('path');
 const {
   uploadToR2,
   getStreamUrl,
-  getObject,
   getTextObject,
   deleteFromR2,
-  getTotalStorageUsed,
-  checkStorageLimit,
+  PER_USER_STORAGE_LIMIT_BYTES,
+  getUserAudioKey,
+  getUserCoverKey,
+  getUserLyricsKey,
 } = require('./r2');
 
 const {
@@ -22,6 +24,8 @@ const {
   getTrack,
   deleteTrack,
   updateTrackLyricsKey,
+  getUserStorageUsage,
+  withUserLock,
 } = require('./db');
 
 const logger = require('./logger');
@@ -56,49 +60,65 @@ function getExt(file) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /library
-// Returns all tracks from PostgreSQL as a JSON array
+// Returns ONLY tracks owned by the authenticated user
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/', async (_req, res) => {
+router.get('/', async (req, res) => {
   try {
-    const tracks = await getAllTracks();
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const tracks = await getAllTracks(req.userId);
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.json(tracks);
   } catch (err) {
-    logger.error('GET /library failed', { error: err.message });
+    logger.error('GET /library failed', { error: err.message, userId: req.userId });
     res.status(500).json({ error: 'Failed to fetch library tracks' });
   }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /library/storage
-// Returns R2 bucket storage usage stats
+// Returns per-user Cloud Library storage usage stats
 // ─────────────────────────────────────────────────────────────────────────────
-const LIMIT_BYTES = 9.5 * 1024 * 1024 * 1024;
-
-router.get('/storage', async (_req, res) => {
+router.get('/storage', async (req, res) => {
   try {
-    const used = await getTotalStorageUsed();
-    const percentUsed = ((used / LIMIT_BYTES) * 100).toFixed(1);
+    const limit = PER_USER_STORAGE_LIMIT_BYTES;
+    if (!req.userId || req.user?.is_guest) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      return res.json({
+        used: 0,
+        limit,
+        usedGB: '0.00',
+        limitGB: (limit / (1024 ** 3)).toFixed(1),
+        percentUsed: '0.0',
+        isFull: false,
+        isGuest: true,
+      });
+    }
+
+    const used = await getUserStorageUsage(req.userId);
+    const percentUsed = Math.min(100, (used / limit) * 100).toFixed(1);
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.json({
       used,
-      limit: Math.round(LIMIT_BYTES),
+      limit,
       usedGB: (used / (1024 ** 3)).toFixed(2),
-      limitGB: '9.5',
+      limitGB: (limit / (1024 ** 3)).toFixed(1),
       percentUsed,
-      isFull: used >= LIMIT_BYTES,
+      isFull: used >= limit,
+      isGuest: false,
     });
   } catch (err) {
-    logger.error('GET /library/storage failed', { error: err.message });
+    logger.error('GET /library/storage failed', { error: err.message, userId: req.userId });
     res.status(500).json({ error: 'Failed to fetch storage stats' });
   }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /library/upload
-// Accepts: audio (required), cover (optional), lyrics (optional)
-// Body fields: title, artist, duration
-// Inline 10-minute timeout to survive Render's free-tier limit for large files.
+// Requires permanent user (is_guest = false).
+// Sets tracks.user_id = req.userId (server-authoritative).
+// Concurrency-safe per-user quota checking via PostgreSQL advisory lock.
 // ─────────────────────────────────────────────────────────────────────────────
 router.post(
   '/upload',
@@ -113,7 +133,14 @@ router.post(
     { name: 'lyrics', maxCount: 1 },
   ]),
   async (req, res) => {
-    console.log('[library/upload] files received:', req.files ? Object.keys(req.files) : 'none', 'body:', req.body);
+    if (!req.userId || !req.user || req.user.is_guest) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'Permanent account required to upload to Cloud Library',
+        code: 'AUTH_REQUIRED',
+      });
+    }
+
     const audio  = req.files?.audio?.[0];
     const cover  = req.files?.cover?.[0];
     const lyrics = req.files?.lyrics?.[0];
@@ -122,125 +149,151 @@ router.post(
       return res.status(400).json({ error: 'audio field is required' });
     }
 
-    // ── Storage guard — check BEFORE any upload ──────────────────────────
-    try {
-      await checkStorageLimit(audio.size);
-    } catch (err) {
-      if (err.code === 'STORAGE_FULL' || err.message === 'STORAGE_FULL') {
-        return res.status(507).json({
-          error: 'Storage full',
-          message: 'Library has reached its 9.5GB limit. Delete some tracks to free space.',
-        });
+    // Validate lyrics extension if provided
+    if (lyrics) {
+      const lrcExt = path.extname(lyrics.originalname || '').toLowerCase();
+      if (lrcExt && lrcExt !== '.lrc') {
+        return res.status(400).json({ error: 'Only .lrc files are supported for lyrics' });
       }
-      logger.error('Storage check failed', { error: err.message });
-      return res.status(500).json({ error: 'Failed to check storage capacity' });
     }
 
     const { v4: uuidv4 } = await import('uuid');
     const id     = uuidv4();
     const format = getExt(audio);
 
-    // ── Upload audio to R2 ───────────────────────────────────────────────
-    const audioKey = `audio/${id}.${format}`;
-    try {
-      await uploadToR2(audioKey, audio.buffer, audio.mimetype || 'audio/mpeg');
-    } catch (err) {
-      logger.error('R2 audio upload failed', { error: err.message });
-      return res.status(500).json({ error: 'Failed to upload audio to R2' });
-    }
-
-    // ── Upload cover image (optional) ───────────────────────────────────
-    let coverKey = null;
-    if (cover) {
-      const coverExt = getExt(cover);
-      coverKey = `covers/${id}.${coverExt}`;
-      try {
-        await uploadToR2(coverKey, cover.buffer, cover.mimetype || 'image/jpeg');
-      } catch (err) {
-        logger.warn('R2 cover upload failed (non-fatal)', { error: err.message });
-        coverKey = null;
-      }
-    }
-
-    // ── Upload lyrics .lrc (optional) ───────────────────────────────────
-    let lyricsKey = null;
-    if (lyrics) {
-      const lrcExt = path.extname(lyrics.originalname || '').toLowerCase();
-      if (lrcExt && lrcExt !== '.lrc') {
-        deleteFromR2(audioKey).catch(() => {});
-        if (coverKey) deleteFromR2(coverKey).catch(() => {});
-        return res.status(400).json({ error: 'Only .lrc files are supported for lyrics' });
-      }
-
-      lyricsKey = `lyrics/${id}.lrc`;
-      try {
-        await uploadToR2(lyricsKey, lyrics.buffer, 'text/plain');
-      } catch (err) {
-        logger.error('R2 lyrics upload failed', { error: err.message });
-        deleteFromR2(audioKey).catch(() => {});
-        if (coverKey) deleteFromR2(coverKey).catch(() => {});
-        return res.status(500).json({ error: 'Failed to upload lyrics to R2' });
-      }
-    }
-
-    // ── Persist metadata to PostgreSQL ──────────────────────────────────
     const title    = (req.body?.title  || '').trim() || audio.originalname?.replace(/\.[^.]+$/, '') || 'Untitled';
     const artist   = (req.body?.artist || '').trim() || null;
     const duration = parseFloat(req.body?.duration) || null;
 
+    const audioKey  = getUserAudioKey(req.userId, id, format);
+    let coverKey    = null;
+    let lyricsKey   = null;
+
+    if (cover) {
+      const coverExt = getExt(cover);
+      coverKey = getUserCoverKey(req.userId, id, coverExt);
+    }
+    if (lyrics) {
+      lyricsKey = getUserLyricsKey(req.userId, id);
+    }
+
+    // ── Concurrency-safe quota check + atomic track creation ─────────────────
     let track;
     try {
-      track = await insertTrack({
-        id,
-        title,
-        artist,
-        duration,
-        size: audio.size,
-        format,
-        audio_key: audioKey,
-        cover_key: coverKey,
-        lyrics_key: lyricsKey,
-        provider: 'local',
-        provider_track_id: null
+      track = await withUserLock(req.userId, async (client) => {
+        const currentUsage = await getUserStorageUsage(req.userId, client);
+        if (currentUsage + audio.size > PER_USER_STORAGE_LIMIT_BYTES) {
+          const err = new Error('STORAGE_FULL');
+          err.code = 'STORAGE_FULL';
+          err.usedBytes = currentUsage;
+          throw err;
+        }
+
+        // Upload audio to R2
+        await uploadToR2(audioKey, audio.buffer, audio.mimetype || 'audio/mpeg');
+
+        // Upload cover if present (non-fatal)
+        if (coverKey && cover) {
+          try {
+            await uploadToR2(coverKey, cover.buffer, cover.mimetype || 'image/jpeg');
+          } catch (covErr) {
+            logger.warn('R2 cover upload failed (non-fatal)', { error: covErr.message });
+            coverKey = null;
+          }
+        }
+
+        // Upload lyrics if present (non-fatal)
+        if (lyricsKey && lyrics) {
+          try {
+            await uploadToR2(lyricsKey, lyrics.buffer, 'text/plain');
+          } catch (lyrErr) {
+            logger.warn('R2 lyrics upload failed (non-fatal)', { error: lyrErr.message });
+            lyricsKey = null;
+          }
+        }
+
+        // Persist metadata to PostgreSQL under the user's ID
+        return await insertTrack({
+          id,
+          title,
+          artist,
+          duration,
+          size: audio.size,
+          format,
+          audio_key: audioKey,
+          cover_key: coverKey,
+          lyrics_key: lyricsKey,
+          provider: 'local',
+          provider_track_id: null,
+          user_id: req.userId,
+        }, client);
       });
     } catch (err) {
-      logger.error('DB insert failed', { error: err.message });
+      if (err.code === 'STORAGE_FULL' || err.message === 'STORAGE_FULL') {
+        return res.status(507).json({
+          error: 'Storage quota exceeded',
+          message: 'Your Cloud Library has reached its 2GB limit. Delete some tracks to free space.',
+        });
+      }
+      logger.error('Track upload failed', { error: err.message, userId: req.userId });
+      // Best-effort cleanup of any uploaded R2 objects on failure
       deleteFromR2(audioKey).catch(() => {});
       if (coverKey)  deleteFromR2(coverKey).catch(() => {});
       if (lyricsKey) deleteFromR2(lyricsKey).catch(() => {});
-      return res.status(500).json({ error: 'Failed to save track metadata' });
+      return res.status(500).json({ error: 'Failed to upload track' });
     }
 
-    logger.info('Track uploaded to R2 library', { id, title, format, size: audio.size });
+    logger.info('Track uploaded to Cloud Library', { id, title, format, size: audio.size, userId: req.userId });
     res.json({ success: true, track });
   }
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /library/:id
+// Returns single track metadata with strict ownership check
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/:id', async (req, res) => {
+  try {
+    if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
+    const track = await getTrack(req.params.id, req.userId);
+    if (!track) return res.status(404).json({ error: 'Track not found' });
+    res.json({ track });
+  } catch (err) {
+    logger.error('GET /library/:id failed', { error: err.message, id: req.params.id });
+    res.status(500).json({ error: 'Failed to fetch track' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /library/:id/stream
-// Returns a signed URL for the audio file (valid 1 hour)
+// Returns presigned R2 URL ONLY AFTER verifying track ownership
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/stream', async (req, res) => {
   try {
-    const track = await getTrack(req.params.id);
-    if (!track) return res.status(404).json({ error: 'Track not found' });
+    if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
+    const track = await getTrack(req.params.id, req.userId);
+    if (!track || !track.audio_key) {
+      return res.status(404).json({ error: 'Track not found' });
+    }
     const url = await getStreamUrl(track.audio_key);
     res.json({ url });
   } catch (err) {
-    logger.error('GET /library/:id/stream failed', { error: err.message });
+    logger.error('GET /library/:id/stream failed', { error: err.message, id: req.params.id });
     res.status(500).json({ error: 'Failed to generate stream URL' });
   }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /library/:id/lyrics
-// Returns the lyrics content directly as plain text (UTF-8)
+// Returns plain text lyrics ONLY AFTER verifying track ownership
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/lyrics', async (req, res) => {
   try {
-    const track = await getTrack(req.params.id);
-    if (!track) return res.status(404).json({ error: 'Track not found' });
-    if (!track.lyrics_key) return res.status(404).json({ error: 'No lyrics for this track' });
+    if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
+    const track = await getTrack(req.params.id, req.userId);
+    if (!track || !track.lyrics_key) {
+      return res.status(404).json({ error: 'Lyrics not found' });
+    }
 
     const content = await getTextObject(track.lyrics_key);
     if (content === null || content === undefined) {
@@ -248,10 +301,10 @@ router.get('/:id/lyrics', async (req, res) => {
     }
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Cache-Control', 'private, no-cache');
     res.send(content);
   } catch (err) {
-    logger.error('GET /library/:id/lyrics failed', { error: err.message });
+    logger.error('GET /library/:id/lyrics failed', { error: err.message, id: req.params.id });
     if (err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404) {
       return res.status(404).json({ error: 'Lyrics file not found in storage' });
     }
@@ -261,14 +314,18 @@ router.get('/:id/lyrics', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /library/:id/lyrics
-// Associates or replaces .lrc lyrics on an existing R2 track
+// Associates or replaces .lrc lyrics ONLY AFTER verifying track ownership
 // ─────────────────────────────────────────────────────────────────────────────
 router.post(
   '/:id/lyrics',
   upload.single('lyrics'),
   async (req, res) => {
     try {
-      const track = await getTrack(req.params.id);
+      if (!req.userId || !req.user || req.user.is_guest) {
+        return res.status(403).json({ error: 'Forbidden', message: 'Permanent account required' });
+      }
+
+      const track = await getTrack(req.params.id, req.userId);
       if (!track) {
         return res.status(404).json({ error: 'Track not found' });
       }
@@ -283,21 +340,14 @@ router.post(
         return res.status(400).json({ error: 'Only .lrc files are supported' });
       }
 
-      const lyricsKey = `lyrics/${track.id}.lrc`;
+      const lyricsKey = getUserLyricsKey(req.userId, track.id);
+      await uploadToR2(lyricsKey, file.buffer, 'text/plain');
+      await updateTrackLyricsKey(track.id, lyricsKey, req.userId);
 
-      try {
-        await uploadToR2(lyricsKey, file.buffer, 'text/plain');
-      } catch (err) {
-        logger.error('R2 lyrics upload failed', { error: err.message });
-        return res.status(500).json({ error: 'Failed to upload lyrics to R2' });
-      }
-
-      await updateTrackLyricsKey(track.id, lyricsKey);
-
-      logger.info('Lyrics updated for R2 track', { id: track.id, lyricsKey });
+      logger.info('Lyrics updated for track', { id: track.id, lyricsKey, userId: req.userId });
       res.json({ success: true, lyrics_key: lyricsKey });
     } catch (err) {
-      logger.error('POST /library/:id/lyrics failed', { error: err.message });
+      logger.error('POST /library/:id/lyrics failed', { error: err.message, id: req.params.id });
       res.status(500).json({ error: 'Failed to save lyrics' });
     }
   }
@@ -305,44 +355,68 @@ router.post(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /library/:id/cover
-// Redirects to signed URL for the cover image
+// Redirects to signed URL for cover ONLY AFTER verifying track ownership
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/cover', async (req, res) => {
   try {
-    const track = await getTrack(req.params.id);
-    if (!track) return res.status(404).json({ error: 'Track not found' });
-    if (!track.cover_key) return res.status(404).json({ error: 'No cover for this track' });
+    if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
+    const track = await getTrack(req.params.id, req.userId);
+    if (!track || !track.cover_key) {
+      return res.status(404).json({ error: 'Cover not found' });
+    }
     const url = await getStreamUrl(track.cover_key);
     res.redirect(url);
   } catch (err) {
-    logger.error('GET /library/:id/cover failed', { error: err.message });
+    logger.error('GET /library/:id/cover failed', { error: err.message, id: req.params.id });
     res.status(500).json({ error: 'Failed to fetch cover URL' });
   }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE /library/:id
-// Deletes audio + cover + lyrics from R2, then removes DB record
+// Deletes track with ownership verification.
+// Safe partial failure strategy:
+// 1. Ownership is verified first.
+// 2. PostgreSQL record is deleted with ownership check (WHERE id = $1 AND user_id = $2).
+//    If DB delete fails, R2 objects remain intact for safe retry.
+// 3. R2 objects are cleaned up best-effort after DB deletion.
 // ─────────────────────────────────────────────────────────────────────────────
 router.delete('/:id', async (req, res) => {
   try {
-    const track = await getTrack(req.params.id);
-    if (!track) return res.status(404).json({ error: 'Track not found' });
+    if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
 
-    // Delete R2 objects (all best-effort in parallel)
-    const deletions = [deleteFromR2(track.audio_key)];
+    // 1. Verify ownership first
+    const track = await getTrack(req.params.id, req.userId);
+    if (!track) {
+      return res.status(404).json({ error: 'Track not found' });
+    }
+
+    // 2. Delete from PostgreSQL with ownership enforcement
+    const deletedRow = await deleteTrack(track.id, req.userId);
+    if (!deletedRow) {
+      return res.status(404).json({ error: 'Track not found' });
+    }
+
+    // 3. Delete R2 objects (best-effort)
+    const deletions = [];
+    if (track.audio_key)  deletions.push(deleteFromR2(track.audio_key));
     if (track.cover_key)  deletions.push(deleteFromR2(track.cover_key));
     if (track.lyrics_key) deletions.push(deleteFromR2(track.lyrics_key));
 
-    await Promise.allSettled(deletions); // never throw on partial failures
+    const results = await Promise.allSettled(deletions);
+    const failures = results.filter(r => r.status === 'rejected');
+    if (failures.length > 0) {
+      logger.warn('Some R2 objects failed to delete during track deletion', {
+        trackId: track.id,
+        userId: req.userId,
+        failedCount: failures.length,
+      });
+    }
 
-    // Remove from PostgreSQL
-    await deleteTrack(track.id);
-
-    logger.info('Track deleted from R2 library', { id: track.id, title: track.title });
+    logger.info('Track deleted from Cloud Library', { id: track.id, title: track.title, userId: req.userId });
     res.json({ success: true });
   } catch (err) {
-    logger.error('DELETE /library/:id failed', { error: err.message });
+    logger.error('DELETE /library/:id failed', { error: err.message, id: req.params.id });
     res.status(500).json({ error: 'Failed to delete track' });
   }
 });
