@@ -408,42 +408,72 @@ app.get(['/api/library/tracks/:id/download', '/api/library/tracks/:id/download/:
     // Check if it exists in the R2 PostgreSQL database
     try {
       const r2Track = await db.getTrack(id);
-      if (r2Track && r2Track.audio_key) {
-        const r2 = require('./r2');
-        try {
-          const range = req.headers.range;
-          const r2Response = await r2.getObject(r2Track.audio_key, range);
-          
-          if (range && r2Response.ContentRange) {
-            res.status(206);
-            res.setHeader('Content-Range', r2Response.ContentRange);
-          } else {
-            res.status(200);
-          }
-          
-          if (r2Response.ContentType) {
-            res.setHeader('Content-Type', r2Response.ContentType);
-          } else {
-            res.setHeader('Content-Type', r2Track.format === 'flac' ? 'audio/flac' : 'audio/mpeg');
-          }
-          
-          if (r2Response.ContentLength !== undefined) {
-            res.setHeader('Content-Length', r2Response.ContentLength);
-          }
-          
-          res.setHeader('Accept-Ranges', 'bytes');
-          
-          r2Response.Body.pipe(res);
-          return;
-        } catch (err) {
-          logger.error('Failed to stream R2 track for download', { id, error: err.message });
-          return res.status(500).json({ error: 'Failed to stream track from R2' });
+      if (!r2Track || !r2Track.audio_key) {
+        return res.status(404).json({ error: 'Track not found' });
+      }
+
+      // Authorization check by track category:
+      // Case B: Public NoirSync catalog track (published)
+      const isPublicCatalog = r2Track.provider === 'noirsync_public' && r2Track.publication_status === 'published';
+      
+      // Case A: Shared Cloud Library track (provider = 'local' and user_id != null)
+      const isSharedCloud = r2Track.provider === 'local' && r2Track.user_id !== null;
+
+      if (!isPublicCatalog && !isSharedCloud) {
+        // Legacy orphan local tracks (user_id is null) or unauthorized provider records
+        return res.status(403).json({ error: 'Forbidden', message: 'Track is not available for download' });
+      }
+
+      if (isSharedCloud) {
+        // Shared Cloud Library track requires an authenticated user session
+        const { parseCookies, COOKIE_NAME } = require('./auth/session');
+        const { unsign } = require('./auth/crypto');
+        const cookies = parseCookies(req.headers.cookie);
+        const sessionToken = cookies[COOKIE_NAME];
+        const userId = sessionToken ? unsign(sessionToken) : null;
+
+        if (!userId) {
+          return res.status(401).json({
+            error: 'Unauthorized',
+            message: 'Authentication required to stream Cloud Library tracks'
+          });
         }
+      }
+
+      const r2 = require('./r2');
+      try {
+        const range = req.headers.range;
+        const r2Response = await r2.getObject(r2Track.audio_key, range);
+        
+        if (range && r2Response.ContentRange) {
+          res.status(206);
+          res.setHeader('Content-Range', r2Response.ContentRange);
+        } else {
+          res.status(200);
+        }
+        
+        if (r2Response.ContentType) {
+          res.setHeader('Content-Type', r2Response.ContentType);
+        } else {
+          res.setHeader('Content-Type', r2Track.format === 'flac' ? 'audio/flac' : 'audio/mpeg');
+        }
+        
+        if (r2Response.ContentLength !== undefined) {
+          res.setHeader('Content-Length', r2Response.ContentLength);
+        }
+        
+        res.setHeader('Accept-Ranges', 'bytes');
+        
+        r2Response.Body.pipe(res);
+        return;
+      } catch (err) {
+        logger.error('Failed to stream R2 track for download', { id, error: err.message });
+        return res.status(500).json({ error: 'Failed to stream track from R2' });
       }
     } catch (err) {
       logger.error('Failed to look up R2 track for download', { id, error: err.message });
+      return res.status(500).json({ error: 'Internal server error' });
     }
-    return res.status(404).json({ error: 'Track not found' });
   }
 
   const range = req.headers.range;

@@ -12,7 +12,8 @@ const { v4: uuidv4 } = require('uuid');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const { pool, initDb, insertTrack, getTrack } = require('./src/db');
-const { sessionMiddleware } = require('./src/auth/session');
+const { sessionMiddleware, parseCookies, COOKIE_NAME } = require('./src/auth/session');
+const { unsign } = require('./src/auth/crypto');
 const { resolveProviderTrack } = require('./src/music/resolver');
 
 // Mock R2 storage
@@ -62,12 +63,35 @@ app.get(['/api/library/tracks/:id/download', '/api/library/tracks/:id/download/:
   if (!track) {
     try {
       const r2Track = await getTrack(id);
-      if (r2Track) {
-        res.setHeader('Content-Type', 'audio/mpeg');
-        return res.status(200).send(Buffer.from('MOCK_AUDIO_DATA'));
+      if (!r2Track || !r2Track.audio_key) {
+        return res.status(404).json({ error: 'Track not found' });
       }
-    } catch (e) {}
-    return res.status(404).json({ error: 'Track not found' });
+
+      const isPublicCatalog = r2Track.provider === 'noirsync_public' && r2Track.publication_status === 'published';
+      const isSharedCloud = r2Track.provider === 'local' && r2Track.user_id !== null;
+
+      if (!isPublicCatalog && !isSharedCloud) {
+        return res.status(403).json({ error: 'Forbidden', message: 'Track is not available for download' });
+      }
+
+      if (isSharedCloud) {
+        const cookies = parseCookies(req.headers.cookie);
+        const sessionToken = cookies[COOKIE_NAME];
+        const userId = sessionToken ? unsign(sessionToken) : null;
+
+        if (!userId) {
+          return res.status(401).json({
+            error: 'Unauthorized',
+            message: 'Authentication required to stream Cloud Library tracks'
+          });
+        }
+      }
+
+      res.setHeader('Content-Type', 'audio/mpeg');
+      return res.status(200).send(Buffer.from('MOCK_AUDIO_DATA'));
+    } catch (e) {
+      return res.status(500).json({ error: 'Internal server error' });
+    }
   }
   res.status(200).send(Buffer.from('LOCAL_CATALOG_AUDIO'));
 });
@@ -576,14 +600,78 @@ async function runTests() {
     assert.ok(upgradedList.json.some(t => t.id === guestTrackId), 'Upgraded user must still see their track');
     console.log('PASS: Guest -> permanent upgrade preserved track ownership in place.');
 
-    // Test 21: Room playback compatibility through legacy endpoints
-    console.log('\nTest 21: Room playback compatibility through legacy endpoints...');
-    const roomDownloadRes = await httpRequest({
+    // Test 21: Legacy audio download boundary & room playback authorization
+    console.log('\nTest 21: Legacy audio download boundary & room playback authorization...');
+    
+    // 21a: Anonymous caller attempting to download shared Cloud track -> 401
+    const anonRes = await httpRequest({
       method: 'GET',
       path: `/api/library/tracks/${trackBId}/download`,
     });
-    assert.strictEqual(roomDownloadRes.status, 200, 'Room playback download must succeed without requiring Cloud Library ownership');
-    console.log('PASS: Existing room playback continues working through legacy download route.');
+    assert.strictEqual(anonRes.status, 401, 'Anonymous download of shared Cloud track must be rejected with 401');
+    assert.strictEqual(anonRes.json?.error, 'Unauthorized');
+    console.log('PASS: Anonymous download of shared Cloud track is rejected with 401.');
+
+    // 21b: Authenticated User A streaming User B's shared Cloud track -> 200
+    const authDownloadRes = await httpRequest({
+      method: 'GET',
+      path: `/api/library/tracks/${trackBId}/download`,
+      headers: { 'Cookie': cookieA },
+    });
+    assert.strictEqual(authDownloadRes.status, 200, 'Authenticated user must be able to stream shared Cloud track');
+    console.log('PASS: Authenticated user streams shared Cloud track successfully with 200.');
+
+    // 21c: Metadata-only track (audio_key = NULL) -> 404
+    const metaTrack = await insertTrack({
+      id: 'meta-only-track-test-uuid',
+      title: 'Spotify Metadata Only',
+      artist: 'Artist',
+      provider: 'spotify',
+      provider_track_id: 'spotify-123',
+      audio_key: null,
+      user_id: null,
+    });
+    const metaDownloadRes = await httpRequest({
+      method: 'GET',
+      path: `/api/library/tracks/${metaTrack.id}/download`,
+      headers: { 'Cookie': cookieA },
+    });
+    assert.strictEqual(metaDownloadRes.status, 404, 'Metadata-only track without audio_key must return 404');
+    console.log('PASS: Metadata-only track without audio_key returns 404.');
+
+    // 21d: Legacy orphan track (provider = 'local', user_id = NULL) -> 403
+    const orphanTrack = await insertTrack({
+      id: 'orphan-track-test-uuid',
+      title: 'Legacy Orphan Track',
+      artist: 'Artist',
+      provider: 'local',
+      audio_key: 'orphan/audio.mp3',
+      user_id: null,
+    });
+    const orphanDownloadRes = await httpRequest({
+      method: 'GET',
+      path: `/api/library/tracks/${orphanTrack.id}/download`,
+      headers: { 'Cookie': cookieA },
+    });
+    assert.strictEqual(orphanDownloadRes.status, 403, 'Legacy orphan track without user_id must return 403');
+    console.log('PASS: Legacy orphan track without user_id returns 403.');
+
+    // 21e: Universal public NoirSync content (provider = 'noirsync_public', published) -> anonymous 200
+    const publicTrack = await insertTrack({
+      id: 'public-catalog-track-test-uuid',
+      title: 'Universal Public Song',
+      artist: 'Catalog Artist',
+      provider: 'noirsync_public',
+      publication_status: 'published',
+      audio_key: 'public/catalog/audio/song.mp3',
+      user_id: null,
+    });
+    const publicDownloadRes = await httpRequest({
+      method: 'GET',
+      path: `/api/library/tracks/${publicTrack.id}/download`,
+    });
+    assert.strictEqual(publicDownloadRes.status, 200, 'Universal public published track must be downloadable anonymously');
+    console.log('PASS: Universal public track streams anonymously with 200.');
 
     console.log('\n==================================================');
     console.log('ALL 21 TESTS PASSED SUCCESSFULLY (20 Required + 1 Room Playback)');
