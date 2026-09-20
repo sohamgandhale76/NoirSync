@@ -26,11 +26,45 @@ async function testTiming() {
     }).on('error', () => resolve(false));
   });
 
+  // Helper: wait for actual server readiness (TCP listening + /health responding)
+  function waitForServerReady(port = 3001, host = '127.0.0.1', timeoutMs = 15000) {
+    return new Promise((resolve, reject) => {
+      const startTime = Date.now();
+      const interval = 50;
+
+      const check = () => {
+        const socket = net.createConnection({ port, host }, () => {
+          socket.end();
+          http.get(`http://${host}:${port}/health`, (res) => {
+            if (res.statusCode === 200) {
+              resolve();
+            } else {
+              retry();
+            }
+          }).on('error', retry);
+        });
+
+        socket.on('error', retry);
+      };
+
+      const retry = () => {
+        if (Date.now() - startTime > timeoutMs) {
+          reject(new Error(`Server failed to become ready on ${host}:${port} within ${timeoutMs}ms`));
+        } else {
+          setTimeout(check, interval);
+        }
+      };
+
+      check();
+    });
+  }
+
   if (!isRunning) {
     console.log('Starting server on port 3001...');
     process.env.PORT = '3001';
     require('./src/index.js');
-    await new Promise(r => setTimeout(r, 1000));
+    await waitForServerReady(3001);
+    console.log('Server is ready and accepting requests.');
   }
 
   const SERVER = 'http://127.0.0.1:3001';

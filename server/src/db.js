@@ -170,4 +170,18 @@ async function deleteTrack(id) {
   await pool.query('DELETE FROM tracks WHERE id = $1', [id]);
 }
 
-module.exports = { pool, initDb, insertTrack, getAllTracks, getTrack, deleteTrack };
+/**
+ * Update the lyrics_key for an existing track.
+ * @param {string} id
+ * @param {string} lyricsKey
+ * @returns {Promise<Object|null>}
+ */
+async function updateTrackLyricsKey(id, lyricsKey) {
+  const result = await pool.query(
+    'UPDATE tracks SET lyrics_key = $1 WHERE id = $2 RETURNING *',
+    [lyricsKey, id]
+  );
+  return result.rows[0] || null;
+}
+
+module.exports = { pool, initDb, insertTrack, getAllTracks, getTrack, deleteTrack, updateTrackLyricsKey };

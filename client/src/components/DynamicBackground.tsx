@@ -8,6 +8,13 @@ interface DynamicBackgroundProps {
 
 export function DynamicBackground({ coverFilename, songName }: DynamicBackgroundProps) {
   const [colors, setColors] = useState<[string, string]>(['#121212', '#1a1a1a']);
+  const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageError, setImageError] = useState(false);
+
+  useEffect(() => {
+    setImageLoaded(false);
+    setImageError(false);
+  }, [coverFilename]);
 
   useEffect(() => {
     if (!songName) return;
@@ -23,10 +30,30 @@ export function DynamicBackground({ coverFilename, songName }: DynamicBackground
     setColors([`hsl(${h1}, 70%, 25%)`, `hsl(${h2}, 70%, 18%)`]);
   }, [songName]);
 
+  const hasValidCover = Boolean(coverFilename && !imageError);
+
   return (
     <div className="absolute inset-0 overflow-hidden pointer-events-none select-none z-0">
-      {/* Dynamic base colors */}
-      {songName && (
+      {/* Cover-based cinematic background */}
+      {hasValidCover && (
+        <div key={coverFilename} className="absolute inset-0 transition-opacity duration-1000 ease-in-out">
+          <img
+            src={`${SERVER_URL || ''}/api/library/covers/${coverFilename}`}
+            onLoad={() => setImageLoaded(true)}
+            onError={() => setImageError(true)}
+            className={`absolute inset-0 w-full h-full object-cover scale-110 blur-2xl md:blur-3xl saturate-[130%] transition-opacity duration-1000 ${
+              imageLoaded ? 'opacity-60' : 'opacity-0'
+            }`}
+            alt=""
+          />
+          {/* Dark noir translucent overlay and vignette for readability */}
+          <div className="absolute inset-0 bg-gradient-to-b from-noir-black/80 via-noir-black/70 to-noir-black/95" />
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-transparent via-noir-black/40 to-noir-black/90" />
+        </div>
+      )}
+
+      {/* Fallback adaptive color blobs (when no cover exists, or before image loads, or on image error) */}
+      {(!hasValidCover || !imageLoaded) && songName && (
         <>
           <div
             className="absolute -top-[20%] -left-[20%] w-[90%] h-[90%] rounded-full opacity-[0.22] blur-[120px] mix-blend-screen animate-blob-slow transition-all duration-[3s]"
@@ -37,16 +64,6 @@ export function DynamicBackground({ coverFilename, songName }: DynamicBackground
             style={{ backgroundColor: colors[1] }}
           />
         </>
-      )}
-      
-      {/* Blurred Cover Art Overlay */}
-      {coverFilename && (
-        <img
-          key={coverFilename}
-          src={`${SERVER_URL || ''}/api/library/covers/${coverFilename}`}
-          className="absolute inset-0 w-full h-full object-cover scale-150 blur-[110px] saturate-[200%] opacity-[0.32] transition-all duration-[2.5s] ease-in-out animate-pulse-slow"
-          alt=""
-        />
       )}
     </div>
   );

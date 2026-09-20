@@ -1,6 +1,8 @@
 import { useEffect, useState, useRef, useCallback, DragEvent } from 'react';
 import { SERVER_URL } from '../lib/constants';
 import { AddToPlaylistModal } from './AddToPlaylistModal';
+import { GlassPanel } from './ui/GlassPanel';
+import { Spinner } from './ui/Spinner';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -76,21 +78,16 @@ function parseFilename(filename: string): { title: string; artist: string } {
 
 function FormatBadge({ format }: { format: string | null }) {
   const f = (format || 'mp3').toUpperCase();
-  const map: Record<string, { bg: string; text: string; border: string }> = {
-    FLAC: { bg: 'rgba(16,185,129,0.08)', text: '#34d399', border: 'rgba(16,185,129,0.3)' },
-    WAV:  { bg: 'rgba(59,130,246,0.08)',  text: '#60a5fa', border: 'rgba(59,130,246,0.3)' },
-    OGG:  { bg: 'rgba(168,85,247,0.08)', text: '#c084fc', border: 'rgba(168,85,247,0.3)' },
-    MP3:  { bg: 'rgba(200,169,110,0.08)', text: '#c8a96e', border: 'rgba(200,169,110,0.3)' },
-    M4A:  { bg: 'rgba(251,146,60,0.08)', text: '#fb923c', border: 'rgba(251,146,60,0.3)' },
+  const colorMap: Record<string, string> = {
+    FLAC: 'border-emerald-700/50 bg-emerald-950/20 text-emerald-400',
+    WAV:  'border-blue-700/50 bg-blue-950/20 text-blue-400',
+    OGG:  'border-purple-700/50 bg-purple-950/20 text-purple-400',
+    MP3:  'border-accent-gold/40 bg-accent-gold/10 text-accent-gold',
+    M4A:  'border-amber-700/50 bg-amber-950/20 text-amber-400',
   };
-  const c = map[f] ?? { bg: 'rgba(255,255,255,0.04)', text: '#888', border: 'rgba(255,255,255,0.1)' };
+  const cls = colorMap[f] ?? 'border-noir-border bg-noir-graphite/60 text-noir-ash';
   return (
-    <span style={{
-      background: c.bg, color: c.text, border: `1px solid ${c.border}`,
-      fontFamily: 'monospace', fontSize: '9px', padding: '2px 6px',
-      borderRadius: '4px', letterSpacing: '0.12em', textTransform: 'uppercase',
-      fontWeight: 600, lineHeight: 1,
-    }}>
+    <span className={`font-mono text-[9px] px-2 py-0.5 rounded-full border font-semibold uppercase tracking-wider leading-none ${cls}`}>
       {f}
     </span>
   );
@@ -104,28 +101,38 @@ function StorageBar({ storage }: { storage: StorageStats | null }) {
   const isFull = storage.isFull;
   const isWarn = pct >= 90 && !isFull;
   const barGrad = isFull
-    ? 'linear-gradient(90deg,#ef4444,#b91c1c)'
+    ? 'linear-gradient(90deg, #ef4444, #b91c1c)'
     : isWarn
-    ? 'linear-gradient(90deg,#f59e0b,#d97706)'
-    : 'linear-gradient(90deg,#c8a96e,#d4882a)';
-  const textColor = isFull ? '#f87171' : isWarn ? '#fbbf24' : '#c8a96e';
+    ? 'linear-gradient(90deg, #f59e0b, #d97706)'
+    : 'linear-gradient(90deg, #c8a96e, #d4882a)';
+  const textColor = isFull ? 'text-red-400' : isWarn ? 'text-amber-400' : 'text-accent-gold';
 
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: '12px',
-      padding: '10px 18px',
-      background: 'rgba(255,255,255,0.02)',
-      borderBottom: '1px solid rgba(255,255,255,0.05)',
-    }}>
-      <span style={{ fontFamily: 'monospace', fontSize: '9px', color: '#555', letterSpacing: '0.15em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
-        R2 Storage
-      </span>
-      <div style={{ flex: 1, height: '3px', borderRadius: '2px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
-        <div style={{ width: `${pct}%`, height: '100%', borderRadius: '2px', background: barGrad, transition: 'width 0.7s ease' }} />
+    <div className="glass-panel border-b border-noir-border/50 px-4 sm:px-6 py-3 flex flex-wrap sm:flex-nowrap items-center gap-3 sm:gap-4 shrink-0">
+      <div className="flex items-center gap-2 shrink-0">
+        <span className="text-accent-gold text-sm">☁</span>
+        <span className="font-ui text-xs font-semibold uppercase tracking-wider text-noir-silver">
+          R2 Storage
+        </span>
       </div>
-      <span style={{ fontFamily: 'monospace', fontSize: '10px', color: textColor, whiteSpace: 'nowrap', fontWeight: 600 }}>
-        {storage.usedGB} <span style={{ color: '#444', fontWeight: 400 }}>/ {storage.limitGB} GB</span>
-      </span>
+      <div className="flex-1 min-w-[140px] h-2 bg-noir-graphite rounded-full overflow-hidden border border-noir-border/40">
+        <div
+          className="h-full rounded-full transition-all duration-700 ease-out"
+          style={{
+            width: `${pct}%`,
+            background: barGrad,
+            boxShadow: pct > 0 ? (isFull ? '0 0 8px rgba(239,68,68,0.4)' : '0 0 8px rgba(200,169,110,0.3)') : 'none',
+          }}
+        />
+      </div>
+      <div className="flex items-center gap-2 font-mono text-xs shrink-0">
+        <span className={`font-semibold ${textColor}`}>
+          {storage.usedGB} <span className="text-noir-dim font-normal">/ {storage.limitGB} GB</span>
+        </span>
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-noir-graphite border border-noir-border/60 text-noir-ash">
+          {pct.toFixed(1)}%
+        </span>
+      </div>
     </div>
   );
 }
@@ -133,149 +140,146 @@ function StorageBar({ storage }: { storage: StorageStats | null }) {
 // ─── Track Card ───────────────────────────────────────────────────────────────
 
 function TrackCard({
-  track, onDelete, onPlay, onAddToPlaylist, isPlaying, isLoading,
+  track, onDelete, onPlay, onAddToPlaylist, onUploadLyrics, isPlaying, isLoading,
 }: {
   track: R2Track;
   onDelete: (id: string) => void;
   onPlay: (track: R2Track) => void;
   onAddToPlaylist?: (track: R2Track) => void;
+  onUploadLyrics?: (track: R2Track, file: File) => void;
   isPlaying: boolean;
   isLoading: boolean;
 }) {
-  const [hovered, setHovered] = useState(false);
   const base = SERVER_URL || '';
   const coverUrl = track.cover_key ? `${base}/library/${track.id}/cover` : null;
-  const active = isPlaying || hovered;
 
   return (
-    <div
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: 'flex', alignItems: 'center', gap: '12px',
-        padding: '10px 14px',
-        borderRadius: '10px',
-        border: isPlaying
-          ? '1px solid rgba(200,169,110,0.4)'
-          : `1px solid ${hovered ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.04)'}`,
-        background: isPlaying
-          ? 'rgba(200,169,110,0.05)'
-          : hovered ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.01)',
-        transition: 'all 0.2s ease',
-        cursor: 'default',
-        boxShadow: isPlaying ? '0 0 20px rgba(200,169,110,0.08)' : 'none',
-      }}
+    <GlassPanel
+      className={`p-3 sm:p-3.5 rounded-xl border transition-all duration-200 flex items-center gap-3 sm:gap-3.5 group relative ${
+        isPlaying
+          ? 'border-accent-gold/60 bg-accent-gold/[0.04] shadow-noir-glow'
+          : 'border-noir-border/50 hover:border-noir-border bg-noir-charcoal/30 hover:bg-noir-charcoal/60'
+      }`}
     >
       {/* Cover */}
-      <div style={{
-        width: '44px', height: '44px', borderRadius: '7px', flexShrink: 0,
-        background: 'rgba(255,255,255,0.04)', overflow: 'hidden',
-        border: '1px solid rgba(255,255,255,0.06)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        position: 'relative',
-      }}>
+      <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 flex items-center justify-center relative shadow-sm">
         {coverUrl ? (
-          <img src={coverUrl} alt="cover" style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+          <img
+            src={coverUrl}
+            alt="cover"
+            className="w-full h-full object-cover"
+            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+          />
         ) : (
-          <span style={{ fontSize: '18px', opacity: 0.15 }}>♪</span>
+          <span className="text-xl opacity-35 text-accent-gold">🎵</span>
         )}
         {isPlaying && (
-          <div style={{
-            position: 'absolute', inset: 0,
-            background: 'rgba(200,169,110,0.15)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center">
             <NowPlayingBars />
           </div>
         )}
       </div>
 
       {/* Metadata */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <p style={{
-          fontFamily: 'monospace', fontSize: '12px', color: '#e8e8e8',
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          marginBottom: '3px', fontWeight: isPlaying ? 600 : 400,
-        }} title={track.title}>{track.title}</p>
-        <p style={{
-          fontFamily: 'monospace', fontSize: '10px', color: '#555',
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          marginBottom: '5px',
-        }}>{track.artist || 'Unknown Artist'}</p>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+      <div className="flex-1 min-w-0">
+        <p
+          className={`font-ui text-sm font-semibold truncate transition-colors ${
+            isPlaying ? 'text-accent-gold' : 'text-noir-white'
+          }`}
+          title={track.title}
+        >
+          {track.title}
+        </p>
+        <p className="font-ui text-xs text-noir-ash truncate mt-0.5" title={track.artist || 'Unknown Artist'}>
+          {track.artist || 'Unknown Artist'}
+        </p>
+        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
           <FormatBadge format={track.format} />
           {track.lyrics_key && (
-            <span style={{
-              fontFamily: 'monospace', fontSize: '9px', padding: '2px 5px',
-              border: '1px solid rgba(200,169,110,0.25)', borderRadius: '4px',
-              color: '#c8a96e', background: 'rgba(200,169,110,0.06)',
-              letterSpacing: '0.1em', textTransform: 'uppercase',
-            }}>LRC</span>
+            <span className="font-mono text-[9px] px-2 py-0.5 rounded-full border border-accent-gold/40 bg-accent-gold/10 text-accent-gold flex items-center gap-0.5 font-semibold uppercase tracking-wider">
+              📝 LRC
+            </span>
           )}
-          <span style={{ fontFamily: 'monospace', fontSize: '9px', color: '#444' }}>
+          <span className="font-mono text-[10px] text-noir-dim">
             {fmtDuration(track.duration)}
           </span>
-          <span style={{ fontFamily: 'monospace', fontSize: '9px', color: '#333' }}>
+          <span className="font-mono text-[10px] text-noir-dim/70">
             {fmtBytes(track.size)}
           </span>
         </div>
       </div>
 
       {/* Actions */}
-      <div style={{ display: 'flex', gap: '6px', opacity: active ? 1 : 0, transition: 'opacity 0.2s' }}>
+      <div className="flex items-center gap-1.5 shrink-0">
         <button
           onClick={() => !isLoading && onPlay(track)}
           disabled={isLoading}
-          title={isLoading ? 'Loading…' : isPlaying ? 'Playing' : 'Load to Room'}
-          style={{
-            width: '32px', height: '32px', borderRadius: '8px',
-            border: isPlaying ? '1px solid rgba(200,169,110,0.5)' : '1px solid rgba(255,255,255,0.1)',
-            background: isPlaying ? 'rgba(200,169,110,0.15)' : 'rgba(255,255,255,0.04)',
-            color: isPlaying ? '#c8a96e' : '#aaa',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: isLoading ? 'not-allowed' : 'pointer',
-            transition: 'all 0.2s', fontSize: '13px',
-          }}
-          onMouseEnter={(e) => { if (!isLoading && !isPlaying) { (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(200,169,110,0.4)'; (e.currentTarget as HTMLButtonElement).style.color = '#c8a96e'; } }}
-          onMouseLeave={(e) => { if (!isLoading && !isPlaying) { (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.1)'; (e.currentTarget as HTMLButtonElement).style.color = '#aaa'; } }}
+          title={isLoading ? 'Loading…' : isPlaying ? 'Pause / Active' : 'Load to Room'}
+          className={`h-8 px-2.5 rounded-lg font-ui text-xs font-medium flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+            isLoading ? 'opacity-50 cursor-not-allowed' : ''
+          } ${
+            isPlaying
+              ? 'bg-accent-gold text-noir-black font-semibold shadow-sm hover:brightness-105'
+              : 'btn-noir hover:border-accent-gold/50 hover:text-accent-gold'
+          }`}
         >
           {isLoading ? (
-            <div style={{ width: '12px', height: '12px', border: '2px solid #c8a96e', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-          ) : isPlaying ? '⏸' : '▶'}
+            <Spinner size="sm" />
+          ) : isPlaying ? (
+            <>
+              <span className="text-xs">⏸</span>
+              <span className="hidden sm:inline">Active</span>
+            </>
+          ) : (
+            <>
+              <span className="text-xs">▶</span>
+              <span className="hidden sm:inline">Play</span>
+            </>
+          )}
         </button>
+
         {onAddToPlaylist && (
           <button
             onClick={() => onAddToPlaylist(track)}
             title="Add to Playlist"
-            style={{
-              width: '32px', height: '32px', borderRadius: '8px',
-              border: '1px solid rgba(200,169,110,0.25)', background: 'rgba(200,169,110,0.06)',
-              color: '#c8a96e', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              cursor: 'pointer', transition: 'all 0.2s', fontSize: '13px',
-            }}
-            onMouseEnter={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.borderColor = 'rgba(200,169,110,0.6)'; b.style.background = 'rgba(200,169,110,0.18)'; }}
-            onMouseLeave={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.borderColor = 'rgba(200,169,110,0.25)'; b.style.background = 'rgba(200,169,110,0.06)'; }}
+            className="btn-noir h-8 w-8 rounded-lg p-0 text-accent-gold border border-noir-border hover:border-accent-gold/40 bg-noir-graphite/40 hover:bg-accent-gold/10 flex items-center justify-center text-xs"
           >
             📋
           </button>
         )}
+
+        {onUploadLyrics && (
+          <label
+            title={track.lyrics_key ? 'Replace Lyrics (.lrc)' : 'Upload Lyrics (.lrc)'}
+            className={`btn-noir h-8 w-8 rounded-lg p-0 border hover:border-accent-gold/40 hover:bg-accent-gold/10 flex items-center justify-center text-xs cursor-pointer relative ${
+              track.lyrics_key
+                ? 'border-accent-gold/40 text-accent-gold bg-accent-gold/10'
+                : 'border-noir-border text-noir-ash bg-noir-graphite/40'
+            }`}
+          >
+            <input
+              type="file"
+              accept=".lrc"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) onUploadLyrics(track, file);
+                e.target.value = '';
+              }}
+            />
+            📝
+          </label>
+        )}
+
         <button
           onClick={() => onDelete(track.id)}
-          title="Delete"
-          style={{
-            width: '32px', height: '32px', borderRadius: '8px',
-            border: '1px solid rgba(255,60,60,0.15)', background: 'rgba(255,60,60,0.03)',
-            color: 'rgba(248,113,113,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', transition: 'all 0.2s', fontSize: '12px',
-          }}
-          onMouseEnter={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.borderColor = 'rgba(248,113,113,0.4)'; b.style.color = '#f87171'; b.style.background = 'rgba(248,113,113,0.06)'; }}
-          onMouseLeave={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.borderColor = 'rgba(255,60,60,0.15)'; b.style.color = 'rgba(248,113,113,0.5)'; b.style.background = 'rgba(255,60,60,0.03)'; }}
+          title="Delete track"
+          className="btn-noir h-8 w-8 rounded-lg p-0 border border-red-900/40 text-red-400 hover:text-red-300 hover:bg-red-950/20 flex items-center justify-center text-xs"
         >
-          ✕
+          🗑
         </button>
       </div>
-    </div>
+    </GlassPanel>
   );
 }
 
@@ -283,13 +287,16 @@ function TrackCard({
 
 function NowPlayingBars() {
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-end', gap: '2px', height: '14px' }}>
+    <div className="flex items-end gap-0.5 h-3.5">
       {[1, 2, 3].map((i) => (
-        <div key={i} style={{
-          width: '3px', borderRadius: '1px', background: '#c8a96e',
-          animation: `nowplaying ${0.6 + i * 0.15}s ease-in-out infinite alternate`,
-          height: `${40 + i * 20}%`,
-        }} />
+        <div
+          key={i}
+          className="w-0.5 rounded-full bg-accent-gold"
+          style={{
+            animation: `nowplaying ${0.6 + i * 0.15}s ease-in-out infinite alternate`,
+            height: `${40 + i * 20}%`,
+          }}
+        />
       ))}
     </div>
   );
@@ -310,7 +317,6 @@ function UploadSidebar({ onUploaded, isFull }: { onUploaded: () => void; isFull:
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const base = SERVER_URL || '';
-
 
   const reset = () => {
     setAudioFile(null); setCoverFile(null); setLyricsFile(null);
@@ -373,22 +379,17 @@ function UploadSidebar({ onUploaded, isFull }: { onUploaded: () => void; isFull:
     xhr.send(form);
   };
 
-  const inputStyle: React.CSSProperties = {
-    width: '100%', boxSizing: 'border-box',
-    background: 'rgba(255,255,255,0.03)',
-    border: '1px solid rgba(255,255,255,0.08)',
-    color: '#e0e0e0', padding: '8px 10px',
-    borderRadius: '7px', fontFamily: 'monospace', fontSize: '11px',
-    outline: 'none', transition: 'border-color 0.2s',
-  };
-
-  const labelStyle: React.CSSProperties = {
-    fontFamily: 'monospace', fontSize: '9px', color: '#444',
-    letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: '5px', display: 'block',
-  };
-
   return (
-    <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      {/* Header */}
+      <div className="space-y-1">
+        <p className="font-ui text-xs font-semibold text-accent-gold uppercase tracking-wider flex items-center gap-1.5">
+          <span>⬆</span> Upload to Library
+        </p>
+        <p className="font-ui text-xs text-noir-ash">
+          Add tracks to your persistent cloud R2 storage
+        </p>
+      </div>
 
       {/* Drag-and-drop zone */}
       <div
@@ -396,82 +397,96 @@ function UploadSidebar({ onUploaded, isFull }: { onUploaded: () => void; isFull:
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
         onClick={() => document.getElementById('lib-audio-input')?.click()}
-        style={{
-          position: 'relative', cursor: 'pointer',
-          border: `1px dashed ${audioFile ? 'rgba(200,169,110,0.5)' : dragOver ? 'rgba(200,169,110,0.7)' : 'rgba(255,255,255,0.1)'}`,
-          borderRadius: '10px', padding: '20px 12px', textAlign: 'center',
-          background: audioFile
-            ? 'rgba(200,169,110,0.04)'
-            : dragOver ? 'rgba(200,169,110,0.06)' : 'rgba(255,255,255,0.01)',
-          transition: 'all 0.2s',
-          boxShadow: dragOver ? '0 0 20px rgba(200,169,110,0.1)' : 'none',
-        }}
+        className={`border border-dashed rounded-xl p-5 text-center cursor-pointer transition-all duration-300 group ${
+          dragOver
+            ? 'border-accent-gold bg-accent-gold/10 shadow-noir-glow'
+            : audioFile
+            ? 'border-accent-gold/60 bg-accent-gold/[0.04]'
+            : 'border-accent-gold/40 hover:border-accent-gold bg-accent-gold/[0.02] hover:bg-accent-gold/[0.06] shadow-sm hover:shadow-accent-gold/5'
+        }`}
       >
         <input
           id="lib-audio-input"
           type="file"
           accept="audio/*"
-          style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer', pointerEvents: 'none' }}
+          className="hidden"
           onChange={(e) => { const f = e.target.files?.[0]; if (f) handleAudioSelect(f); }}
         />
         {audioFile ? (
-          <>
-            <div style={{ fontSize: '22px', marginBottom: '6px' }}>🎵</div>
-            <p style={{ fontFamily: 'monospace', fontSize: '11px', color: '#c8a96e', marginBottom: '2px' }}>
-              {audioFile.name.length > 28 ? audioFile.name.slice(0, 28) + '…' : audioFile.name}
-            </p>
-            <p style={{ fontFamily: 'monospace', fontSize: '9px', color: '#555' }}>
-              {fmtBytes(audioFile.size)}{duration ? ` · ${fmtDuration(duration)}` : ''}
-            </p>
-          </>
+          <div className="flex items-center gap-3 text-left">
+            <div className="w-10 h-10 rounded-lg bg-accent-gold/15 text-accent-gold flex items-center justify-center text-xl shrink-0">
+              🎵
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="font-ui text-xs font-semibold text-noir-white truncate" title={audioFile.name}>
+                {audioFile.name}
+              </p>
+              <p className="font-mono text-[10px] text-accent-gold/80 mt-0.5">
+                {fmtBytes(audioFile.size)}{duration ? ` · ${fmtDuration(duration)}` : ''}
+              </p>
+            </div>
+          </div>
         ) : (
-          <>
-            <div style={{ fontSize: '28px', marginBottom: '8px', opacity: 0.3 }}>⬆</div>
-            <p style={{ fontFamily: 'monospace', fontSize: '11px', color: '#555', marginBottom: '3px' }}>
-              Drop audio here
+          <div className="py-2">
+            <div className="text-2xl mb-1.5 transition-transform group-hover:scale-110 text-accent-gold">📥</div>
+            <p className="font-ui text-xs text-accent-gold font-semibold uppercase tracking-wider">
+              Drop audio file here
             </p>
-            <p style={{ fontFamily: 'monospace', fontSize: '9px', color: '#333', letterSpacing: '0.1em' }}>
-              MP3 · WAV · FLAC · OGG
+            <p className="font-mono text-[9px] text-noir-ash mt-1">
+              MP3 · WAV · FLAC · OGG · M4A · Click to browse
             </p>
-          </>
+          </div>
         )}
       </div>
 
       {/* Title & Artist */}
       <div>
-        <span style={labelStyle}>Title</span>
-        <input type="text" value={title} onChange={(e) => setTitle(e.target.value)}
-          placeholder="Track title…" style={inputStyle}
-          onFocus={(e) => { (e.target as HTMLInputElement).style.borderColor = 'rgba(200,169,110,0.4)'; }}
-          onBlur={(e) => { (e.target as HTMLInputElement).style.borderColor = 'rgba(255,255,255,0.08)'; }}
+        <label className="font-ui text-xs font-medium text-noir-silver mb-1.5 block">
+          Track Title
+        </label>
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Track title…"
+          className="w-full bg-noir-graphite border border-noir-border text-noir-white px-3.5 py-2.5 rounded-lg font-ui text-sm focus:outline-none focus:border-accent-gold/60 focus:ring-2 focus:ring-accent-gold/20 transition-all placeholder:text-noir-dim"
         />
       </div>
       <div>
-        <span style={labelStyle}>Artist</span>
-        <input type="text" value={artist} onChange={(e) => setArtist(e.target.value)}
-          placeholder="Artist name…" style={inputStyle}
-          onFocus={(e) => { (e.target as HTMLInputElement).style.borderColor = 'rgba(200,169,110,0.4)'; }}
-          onBlur={(e) => { (e.target as HTMLInputElement).style.borderColor = 'rgba(255,255,255,0.08)'; }}
+        <label className="font-ui text-xs font-medium text-noir-silver mb-1.5 block">
+          Artist
+        </label>
+        <input
+          type="text"
+          value={artist}
+          onChange={(e) => setArtist(e.target.value)}
+          placeholder="Artist name…"
+          className="w-full bg-noir-graphite border border-noir-border text-noir-white px-3.5 py-2.5 rounded-lg font-ui text-sm focus:outline-none focus:border-accent-gold/60 focus:ring-2 focus:ring-accent-gold/20 transition-all placeholder:text-noir-dim"
         />
       </div>
 
       {/* Optional files */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+      <div className="grid grid-cols-2 gap-3">
         {[
           { label: 'Cover Art', accept: 'image/*', file: coverFile, setter: setCoverFile, emoji: '🖼' },
           { label: 'Lyrics .lrc', accept: '.lrc', file: lyricsFile, setter: setLyricsFile, emoji: '📝' },
         ].map(({ label, accept, file, setter, emoji }) => (
-          <label key={label} style={{ cursor: 'pointer' }}>
-            <span style={labelStyle}>{label}</span>
-            <div style={{
-              position: 'relative', border: `1px dashed ${file ? 'rgba(200,169,110,0.35)' : 'rgba(255,255,255,0.06)'}`,
-              borderRadius: '7px', padding: '8px 6px', textAlign: 'center',
-              background: file ? 'rgba(200,169,110,0.03)' : 'transparent', transition: 'all 0.2s',
-            }}>
-              <input type="file" accept={accept} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }}
-                onChange={(e) => setter(e.target.files?.[0] ?? null)} />
-              <p style={{ fontFamily: 'monospace', fontSize: '9px', color: file ? '#c8a96e' : '#333' }}>
-                {file ? file.name.slice(0, 14) + (file.name.length > 14 ? '…' : '') : `${emoji} optional`}
+          <label key={label} className="cursor-pointer block">
+            <span className="font-ui text-xs font-medium text-noir-silver mb-1.5 block">{label}</span>
+            <div className={`border border-dashed rounded-lg p-2.5 text-center transition-all flex flex-col items-center justify-center gap-1 ${
+              file
+                ? 'border-accent-gold/50 bg-accent-gold/10 text-accent-gold'
+                : 'border-noir-border hover:border-accent-gold/40 bg-noir-graphite/40 hover:bg-accent-gold/[0.03] text-noir-ash'
+            }`}>
+              <input
+                type="file"
+                accept={accept}
+                className="hidden"
+                onChange={(e) => setter(e.target.files?.[0] ?? null)}
+              />
+              <span className="text-base">{emoji}</span>
+              <p className="font-ui text-xs font-medium truncate max-w-full px-1">
+                {file ? file.name : 'Optional'}
               </p>
             </div>
           </label>
@@ -480,68 +495,68 @@ function UploadSidebar({ onUploaded, isFull }: { onUploaded: () => void; isFull:
 
       {/* Error */}
       {error && (
-        <div style={{
-          padding: '8px 10px', borderRadius: '7px',
-          background: 'rgba(248,113,113,0.05)',
-          border: '1px solid rgba(248,113,113,0.2)',
-          fontFamily: 'monospace', fontSize: '10px', color: '#f87171',
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        }}>
+        <div className="p-3 rounded-lg bg-red-950/30 border border-red-900/50 text-red-400 font-ui text-xs flex justify-between items-center gap-2">
           <span>{error}</span>
-          <button type="button" onClick={() => setError(null)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', opacity: 0.6, fontSize: '12px' }}>✕</button>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            className="text-red-400 hover:text-red-200 transition-colors cursor-pointer text-sm shrink-0"
+          >
+            ✕
+          </button>
         </div>
       )}
 
       {/* Status label shown between upload phases */}
       {uploading && statusMsg && (
-        <p style={{ fontFamily: 'monospace', fontSize: '9px', color: '#555', letterSpacing: '0.1em', textAlign: 'center', margin: '-6px 0' }}>
+        <p className="font-mono text-[10px] text-accent-gold tracking-wider text-center uppercase">
           {statusMsg}
         </p>
       )}
 
       {/* Upload button with integrated progress fill */}
-      <button
-        type="submit"
-        disabled={uploading || isFull || !audioFile}
-        style={{
-          position: 'relative', overflow: 'hidden',
-          width: '100%', padding: '11px 16px',
-          borderRadius: '8px', border: 'none', cursor: 'pointer',
-          fontFamily: 'monospace', fontSize: '11px', fontWeight: 700,
-          letterSpacing: '0.15em', textTransform: 'uppercase',
-          color: uploading || isFull || !audioFile ? 'rgba(10,10,15,0.5)' : '#0a0a0f',
-          background: uploading || isFull || !audioFile
-            ? 'rgba(200,169,110,0.25)'
-            : 'linear-gradient(135deg,#c8a96e,#d4882a)',
-          transition: 'all 0.2s',
-          boxShadow: uploading || isFull || !audioFile
-            ? 'none'
-            : '0 4px 20px rgba(200,169,110,0.25)',
-        }}
-      >
-        {uploading && (
-          <div style={{
-            position: 'absolute', left: 0, top: 0, bottom: 0,
-            width: `${progress}%`, transition: 'width 0.4s ease',
-            background: 'rgba(200,169,110,0.35)', borderRadius: '8px',
-          }} />
-        )}
-        <span style={{ position: 'relative', zIndex: 1 }}>
-          {uploading
-            ? progress > 0 ? `Uploading… ${progress}%` : 'Starting…'
-            : isFull ? 'Storage Full'
-            : audioFile ? '⬆  Upload Track'
-            : 'Select a File First'}
-        </span>
-      </button>
+      <div className="space-y-2">
+        <button
+          type="submit"
+          disabled={uploading || isFull || !audioFile}
+          className={`w-full py-3 px-4 rounded-lg font-ui text-xs font-semibold uppercase tracking-wider transition-all duration-200 relative overflow-hidden flex items-center justify-center gap-2 ${
+            uploading || isFull || !audioFile
+              ? 'bg-noir-graphite border border-noir-border text-noir-dim cursor-not-allowed opacity-60'
+              : 'btn-noir btn-gold shadow-md hover:brightness-105 cursor-pointer'
+          }`}
+        >
+          {uploading && (
+            <div
+              className="absolute left-0 top-0 bottom-0 bg-white/20 transition-all duration-300"
+              style={{ width: `${progress}%` }}
+            />
+          )}
+          <span className="relative z-10 flex items-center gap-2">
+            {uploading ? (
+              <>
+                <Spinner size="sm" />
+                <span>{progress > 0 ? `Uploading… ${progress}%` : 'Starting…'}</span>
+              </>
+            ) : isFull ? (
+              'Storage Full'
+            ) : audioFile ? (
+              '⬆  Upload Track'
+            ) : (
+              'Select Audio File First'
+            )}
+          </span>
+        </button>
 
-      {audioFile && !uploading && (
-        <button type="button" onClick={reset} style={{
-          background: 'none', border: 'none', cursor: 'pointer', color: '#444',
-          fontFamily: 'monospace', fontSize: '9px', letterSpacing: '0.1em',
-          textDecoration: 'underline', textAlign: 'center',
-        }}>clear selection</button>
-      )}
+        {audioFile && !uploading && (
+          <button
+            type="button"
+            onClick={reset}
+            className="w-full text-center font-ui text-xs text-noir-dim hover:text-accent-gold transition-colors underline cursor-pointer"
+          >
+            Clear selection
+          </button>
+        )}
+      </div>
     </form>
   );
 }
@@ -622,6 +637,24 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Delete error'); }
   }, [base, playingId, fetchStorage]);
 
+  const handleUploadLyrics = useCallback(async (track: R2Track, file: File) => {
+    try {
+      const form = new FormData();
+      form.append('lyrics', file);
+      const res = await fetch(`${base}/library/${track.id}/lyrics`, {
+        method: 'POST',
+        body: form,
+      });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Failed to upload lyrics');
+      }
+      await fetchTracks();
+    } catch (err: any) {
+      setError(err.message || 'Failed to upload lyrics (.lrc)');
+    }
+  }, [base, fetchTracks]);
+
   const handleUploaded = useCallback(() => { fetchTracks(); fetchStorage(); }, [fetchTracks, fetchStorage]);
 
   const filtered = tracks.filter((t) => {
@@ -631,121 +664,100 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
 
   return (
     <>
-      {/* Global keyframe styles */}
       <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes nowplaying { from { height: 30%; } to { height: 90%; } }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
       `}</style>
 
-      <audio ref={audioRef} onEnded={() => setPlayingId(null)} style={{ display: 'none' }} />
+      <audio ref={audioRef} onEnded={() => setPlayingId(null)} className="hidden" />
 
-      <div style={{
-        display: 'flex', flexDirection: 'column', height: '100%',
-        background: '#0a0a0f', color: '#e0e0e0',
-        fontFamily: 'monospace',
-      }}>
+      <div className="flex flex-col h-full bg-noir-black text-noir-white font-ui">
         {/* Storage Bar */}
         <StorageBar storage={storage} />
 
         {/* Main 2-col split */}
-        <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
+        <div className="flex flex-col lg:flex-row flex-1 overflow-hidden min-h-0">
 
-          {/* ── Left: Track list 65% ── */}
-          <div style={{
-            flex: '0 0 65%', overflowY: 'auto', borderRight: '1px solid rgba(255,255,255,0.04)',
-            display: 'flex', flexDirection: 'column',
-          }}>
+          {/* ── Left: Track list ── */}
+          <div className="flex-1 lg:max-w-[65%] xl:max-w-[68%] overflow-y-auto border-b lg:border-b-0 lg:border-r border-noir-border/40 flex flex-col min-h-0">
             {/* Search bar */}
-            <div style={{ padding: '14px 16px 10px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-              <div style={{ position: 'relative' }}>
-                <span style={{
-                  position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)',
-                  color: '#333', fontSize: '12px', pointerEvents: 'none',
-                }}>⌕</span>
+            <div className="p-4 sm:p-5 border-b border-noir-border/40 shrink-0">
+              <div className="relative w-full">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-noir-dim text-sm pointer-events-none">
+                  🔍
+                </span>
                 <input
                   type="text"
-                  placeholder="Search tracks…"
+                  placeholder="Search tracks by title or artist…"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  style={{
-                    width: '100%', boxSizing: 'border-box',
-                    background: 'rgba(255,255,255,0.03)',
-                    border: '1px solid rgba(255,255,255,0.06)',
-                    color: '#ccc', padding: '8px 10px 8px 28px',
-                    borderRadius: '7px', fontFamily: 'monospace', fontSize: '11px',
-                    outline: 'none', transition: 'border-color 0.2s',
-                  }}
-                  onFocus={(e) => { (e.target as HTMLInputElement).style.borderColor = 'rgba(200,169,110,0.4)'; }}
-                  onBlur={(e) => { (e.target as HTMLInputElement).style.borderColor = 'rgba(255,255,255,0.06)'; }}
+                  className="w-full bg-noir-graphite border border-noir-border text-noir-white pl-10 pr-10 py-2.5 rounded-lg font-ui text-sm focus:outline-none focus:border-accent-gold/60 focus:ring-2 focus:ring-accent-gold/20 transition-all placeholder:text-noir-dim"
                 />
+                {search && (
+                  <button
+                    onClick={() => setSearch('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-noir-dim hover:text-noir-white transition-colors p-1"
+                    title="Clear search"
+                  >
+                    ✕
+                  </button>
+                )}
               </div>
             </div>
 
             {/* Error banner */}
             {error && (
-              <div style={{
-                margin: '0 16px 8px', padding: '8px 10px', borderRadius: '7px',
-                background: 'rgba(248,113,113,0.05)', border: '1px solid rgba(248,113,113,0.2)',
-                fontFamily: 'monospace', fontSize: '10px', color: '#f87171',
-                display: 'flex', justifyContent: 'space-between',
-              }}>
+              <div className="m-4 p-4 rounded-lg bg-red-950/20 border border-red-900/50 text-red-400 font-ui text-sm flex justify-between items-center shrink-0">
                 <span>{error}</span>
-                <button onClick={() => setError(null)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: '11px' }}>✕</button>
+                <button onClick={() => setError(null)} className="text-red-400 hover:text-red-200 transition-colors p-1">
+                  ✕
+                </button>
               </div>
             )}
 
             {/* Track list body */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: '10px 14px 16px' }}>
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5">
               {loading ? (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '200px', gap: '12px', opacity: 0.5 }}>
-                  <div style={{ width: '20px', height: '20px', border: '2px solid #c8a96e', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-                  <p style={{ fontFamily: 'monospace', fontSize: '9px', letterSpacing: '0.2em', color: '#555' }}>LOADING LIBRARY…</p>
+                <div className="flex flex-col items-center justify-center py-20 gap-4">
+                  <Spinner size="lg" />
+                  <p className="font-mono text-xs text-noir-dim tracking-widest uppercase">
+                    Loading Cloud Library...
+                  </p>
                 </div>
               ) : filtered.length === 0 ? (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '200px', gap: '10px' }}>
-                  <div style={{ fontSize: '40px', opacity: 0.08 }}>◉</div>
-                  <p style={{ fontFamily: 'monospace', fontSize: '12px', color: '#444' }}>
-                    {search ? 'No results' : 'Library is empty'}
+                <div className="flex flex-col items-center justify-center py-20 gap-3 border border-dashed border-noir-border rounded-xl">
+                  <p className="text-4xl opacity-20 text-accent-gold">☁</p>
+                  <p className="font-display text-lg text-noir-ash">
+                    {search ? 'No tracks found' : 'Cloud library is empty'}
                   </p>
-                  <p style={{ fontFamily: 'monospace', fontSize: '9px', color: '#2a2a2a', letterSpacing: '0.1em' }}>
-                    {search ? 'Try a different search' : 'Upload a track using the form →'}
+                  <p className="font-ui text-xs text-noir-dim">
+                    {search ? 'Try a different search keyword' : 'Upload a track using the form on the right →'}
                   </p>
                 </div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  {filtered.map((track, i) => (
-                    <div key={track.id} style={{ animation: `fadeIn 0.25s ease ${i * 0.03}s both` }}>
-                      <TrackCard
-                        track={track}
-                        onPlay={handlePlay}
-                        onDelete={handleDelete}
-                        onAddToPlaylist={(t) => setPlaylistModalTrack(t)}
-                        isPlaying={playingId === track.id}
-                        isLoading={loadingTrackId === track.id}
-                      />
-                    </div>
+                <div className="flex flex-col gap-3">
+                  {filtered.map((track) => (
+                    <TrackCard
+                      key={track.id}
+                      track={track}
+                      onPlay={handlePlay}
+                      onDelete={handleDelete}
+                      onAddToPlaylist={(t) => setPlaylistModalTrack(t)}
+                      onUploadLyrics={handleUploadLyrics}
+                      isPlaying={playingId === track.id}
+                      isLoading={loadingTrackId === track.id}
+                    />
                   ))}
-                  <p style={{ fontFamily: 'monospace', fontSize: '9px', color: '#333', textAlign: 'right', marginTop: '4px', letterSpacing: '0.1em' }}>
-                    {filtered.length} track{filtered.length !== 1 ? 's' : ''}
-                    {storage ? ` · ${storage.usedGB} GB used` : ''}
-                  </p>
+                  <div className="flex items-center justify-between pt-2 text-noir-dim font-mono text-xs">
+                    <span>{filtered.length} track{filtered.length !== 1 ? 's' : ''}</span>
+                    {storage && <span>{storage.usedGB} GB used</span>}
+                  </div>
                 </div>
               )}
             </div>
           </div>
 
-          {/* ── Right: Upload sidebar 35% ── */}
-          <div style={{
-            flex: '0 0 35%', overflowY: 'auto',
-            padding: '16px',
-            background: 'rgba(255,255,255,0.01)',
-            display: 'flex', flexDirection: 'column', gap: '4px',
-          }}>
-            <p style={{
-              fontFamily: 'monospace', fontSize: '9px', letterSpacing: '0.2em',
-              textTransform: 'uppercase', color: '#3a3a3a', marginBottom: '12px',
-            }}>Upload to Library</p>
+          {/* ── Right: Upload sidebar ── */}
+          <div className="w-full lg:w-[35%] xl:w-[32%] overflow-y-auto p-4 sm:p-6 bg-noir-deep/40 flex flex-col gap-4 shrink-0">
             <UploadSidebar
               onUploaded={handleUploaded}
               isFull={storage?.isFull ?? false}
@@ -770,3 +782,4 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
     </>
   );
 }
+

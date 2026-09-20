@@ -61,6 +61,25 @@ async function getObject(key, range) {
 }
 
 /**
+ * Get an object from R2 as a UTF-8 string.
+ * @param {string} key - Object key
+ * @returns {Promise<string|null>} Content string
+ */
+async function getTextObject(key) {
+  const response = await getObject(key);
+  if (!response || !response.Body) return null;
+  if (typeof response.Body.transformToString === 'function') {
+    return await response.Body.transformToString('utf-8');
+  }
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    response.Body.on('data', (chunk) => chunks.push(chunk));
+    response.Body.on('error', reject);
+    response.Body.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+  });
+}
+
+/**
  * Delete an object from R2.
  * @param {string} key - Object key
  */
@@ -132,6 +151,7 @@ module.exports = {
   uploadToR2,
   getStreamUrl,
   getObject,
+  getTextObject,
   getUploadUrl,
   deleteFromR2,
   getTotalStorageUsed,

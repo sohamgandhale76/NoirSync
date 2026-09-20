@@ -468,16 +468,30 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
                 {/* Playback status */}
                 <GlassPanel className="p-5 space-y-4">
                   {roomState.songName && (
-                    <div>
-                      <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase mb-1">Playing</p>
-                      <p className="font-display text-lg text-noir-white leading-snug truncate">
-                        {roomState.songName}
-                      </p>
-                      {roomState.lrcMeta?.artist && (
-                        <p className="font-body text-xs text-noir-dim mt-0.5 truncate">
-                          {roomState.lrcMeta.artist}
+                    <div className="flex items-center gap-3.5">
+                      <div className="w-14 h-14 rounded-xl bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 flex items-center justify-center shadow-sm">
+                        {roomState.coverFilename ? (
+                          <img
+                            src={`${SERVER_URL || ''}/api/library/covers/${roomState.coverFilename}`}
+                            alt="Cover"
+                            className="w-full h-full object-cover"
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                          />
+                        ) : (
+                          <span className="text-xl opacity-35 text-accent-gold">🎵</span>
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase mb-1">Playing</p>
+                        <p className="font-display text-lg text-noir-white leading-snug truncate">
+                          {roomState.songName}
                         </p>
-                      )}
+                        {roomState.lrcMeta?.artist && (
+                          <p className="font-body text-xs text-noir-dim mt-0.5 truncate">
+                            {roomState.lrcMeta.artist}
+                          </p>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -696,11 +710,23 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
             <>
               {/* Song header */}
               {roomState.songName && (
-                <div className="px-8 pt-8 pb-2 shrink-0">
-                  <h1 className="font-display text-3xl text-noir-white">{roomState.lrcMeta?.title || roomState.songName}</h1>
-                  {roomState.lrcMeta?.artist && (
-                    <p className="font-body text-noir-ash mt-1">{roomState.lrcMeta.artist}</p>
+                <div className="px-8 pt-8 pb-2 shrink-0 flex items-center gap-4">
+                  {roomState.coverFilename && (
+                    <div className="w-16 h-16 rounded-xl bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 shadow-md">
+                      <img
+                        src={`${SERVER_URL || ''}/api/library/covers/${roomState.coverFilename}`}
+                        alt="Cover"
+                        className="w-full h-full object-cover"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                      />
+                    </div>
                   )}
+                  <div className="min-w-0">
+                    <h1 className="font-display text-3xl text-noir-white truncate">{roomState.lrcMeta?.title || roomState.songName}</h1>
+                    {roomState.lrcMeta?.artist && (
+                      <p className="font-body text-noir-ash mt-1 truncate">{roomState.lrcMeta.artist}</p>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -792,14 +818,28 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
 
             {/* Playback status */}
             <GlassPanel className="p-4 space-y-4">
-              <div>
-                <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase mb-1">Playing</p>
-                <p className="font-display text-lg text-noir-white leading-snug truncate">
-                  {roomState.songName || 'No Song Loaded'}
-                </p>
-                {roomState.lrcMeta?.artist && (
-                  <p className="font-body text-xs text-noir-dim mt-0.5 truncate">{roomState.lrcMeta.artist}</p>
-                )}
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-lg bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 flex items-center justify-center shadow-sm">
+                  {roomState.coverFilename ? (
+                    <img
+                      src={`${SERVER_URL || ''}/api/library/covers/${roomState.coverFilename}`}
+                      alt="Cover"
+                      className="w-full h-full object-cover"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                  ) : (
+                    <span className="text-lg opacity-35 text-accent-gold">🎵</span>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase mb-1">Playing</p>
+                  <p className="font-display text-base text-noir-white leading-snug truncate">
+                    {roomState.songName || 'No Song Loaded'}
+                  </p>
+                  {roomState.lrcMeta?.artist && (
+                    <p className="font-body text-xs text-noir-dim mt-0.5 truncate">{roomState.lrcMeta.artist}</p>
+                  )}
+                </div>
               </div>
 
               {/* State indicator */}
@@ -914,11 +954,23 @@ export function ViewerView({ roomId, displayName, onLeave, adapter }: Props) {
         {mobileTab === 'lyrics' && (
           <div className="flex-1 flex flex-col h-[70vh] min-h-[400px]">
             {roomState.songName && (
-              <div className="px-4 py-2 shrink-0">
-                <h1 className="font-display text-2xl text-noir-white">{roomState.lrcMeta?.title || roomState.songName}</h1>
-                {roomState.lrcMeta?.artist && (
-                  <p className="font-body text-xs text-noir-ash mt-0.5">{roomState.lrcMeta.artist}</p>
+              <div className="px-4 py-2 shrink-0 flex items-center gap-3">
+                {roomState.coverFilename && (
+                  <div className="w-12 h-12 rounded-lg bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 shadow-sm">
+                    <img
+                      src={`${SERVER_URL || ''}/api/library/covers/${roomState.coverFilename}`}
+                      alt="Cover"
+                      className="w-full h-full object-cover"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                  </div>
                 )}
+                <div className="min-w-0">
+                  <h1 className="font-display text-2xl text-noir-white truncate">{roomState.lrcMeta?.title || roomState.songName}</h1>
+                  {roomState.lrcMeta?.artist && (
+                    <p className="font-body text-xs text-noir-ash mt-0.5 truncate">{roomState.lrcMeta.artist}</p>
+                  )}
+                </div>
               </div>
             )}
             <LyricsRenderer

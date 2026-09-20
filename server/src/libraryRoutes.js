@@ -9,6 +9,8 @@ const path    = require('path');
 const {
   uploadToR2,
   getStreamUrl,
+  getObject,
+  getTextObject,
   deleteFromR2,
   getTotalStorageUsed,
   checkStorageLimit,
@@ -19,6 +21,7 @@ const {
   getAllTracks,
   getTrack,
   deleteTrack,
+  updateTrackLyricsKey,
 } = require('./db');
 
 const logger = require('./logger');
@@ -162,12 +165,21 @@ router.post(
     // ── Upload lyrics .lrc (optional) ───────────────────────────────────
     let lyricsKey = null;
     if (lyrics) {
+      const lrcExt = path.extname(lyrics.originalname || '').toLowerCase();
+      if (lrcExt && lrcExt !== '.lrc') {
+        deleteFromR2(audioKey).catch(() => {});
+        if (coverKey) deleteFromR2(coverKey).catch(() => {});
+        return res.status(400).json({ error: 'Only .lrc files are supported for lyrics' });
+      }
+
       lyricsKey = `lyrics/${id}.lrc`;
       try {
         await uploadToR2(lyricsKey, lyrics.buffer, 'text/plain');
       } catch (err) {
-        logger.warn('R2 lyrics upload failed (non-fatal)', { error: err.message });
-        lyricsKey = null;
+        logger.error('R2 lyrics upload failed', { error: err.message });
+        deleteFromR2(audioKey).catch(() => {});
+        if (coverKey) deleteFromR2(coverKey).catch(() => {});
+        return res.status(500).json({ error: 'Failed to upload lyrics to R2' });
       }
     }
 
@@ -222,20 +234,74 @@ router.get('/:id/stream', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /library/:id/lyrics
-// Redirects to signed URL for the .lrc file
+// Returns the lyrics content directly as plain text (UTF-8)
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/lyrics', async (req, res) => {
   try {
     const track = await getTrack(req.params.id);
     if (!track) return res.status(404).json({ error: 'Track not found' });
     if (!track.lyrics_key) return res.status(404).json({ error: 'No lyrics for this track' });
-    const url = await getStreamUrl(track.lyrics_key);
-    res.redirect(url);
+
+    const content = await getTextObject(track.lyrics_key);
+    if (content === null || content === undefined) {
+      return res.status(404).json({ error: 'Lyrics object not found' });
+    }
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(content);
   } catch (err) {
     logger.error('GET /library/:id/lyrics failed', { error: err.message });
-    res.status(500).json({ error: 'Failed to fetch lyrics URL' });
+    if (err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404) {
+      return res.status(404).json({ error: 'Lyrics file not found in storage' });
+    }
+    res.status(500).json({ error: 'Failed to fetch lyrics' });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /library/:id/lyrics
+// Associates or replaces .lrc lyrics on an existing R2 track
+// ─────────────────────────────────────────────────────────────────────────────
+router.post(
+  '/:id/lyrics',
+  upload.single('lyrics'),
+  async (req, res) => {
+    try {
+      const track = await getTrack(req.params.id);
+      if (!track) {
+        return res.status(404).json({ error: 'Track not found' });
+      }
+
+      const file = req.file;
+      if (!file) {
+        return res.status(400).json({ error: 'lyrics file is required' });
+      }
+
+      const ext = path.extname(file.originalname || '').toLowerCase();
+      if (ext !== '.lrc') {
+        return res.status(400).json({ error: 'Only .lrc files are supported' });
+      }
+
+      const lyricsKey = `lyrics/${track.id}.lrc`;
+
+      try {
+        await uploadToR2(lyricsKey, file.buffer, 'text/plain');
+      } catch (err) {
+        logger.error('R2 lyrics upload failed', { error: err.message });
+        return res.status(500).json({ error: 'Failed to upload lyrics to R2' });
+      }
+
+      await updateTrackLyricsKey(track.id, lyricsKey);
+
+      logger.info('Lyrics updated for R2 track', { id: track.id, lyricsKey });
+      res.json({ success: true, lyrics_key: lyricsKey });
+    } catch (err) {
+      logger.error('POST /library/:id/lyrics failed', { error: err.message });
+      res.status(500).json({ error: 'Failed to save lyrics' });
+    }
+  }
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /library/:id/cover

@@ -254,12 +254,41 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     }
     
     let active = true;
-    fetch(`${SERVER_URL || ''}/api/library/tracks/${roomState.libraryTrackId}`)
-      .then((res) => {
+
+    const loadTrackLyrics = async () => {
+      const isR2 = activeTrack?.source === 'r2' || (roomState.coverFilename && roomState.coverFilename.startsWith('r2-'));
+
+      if (isR2) {
+        // 1. Authoritative R2 Cloud Library lyrics route
+        try {
+          const lrcRes = await fetch(`${SERVER_URL || ''}/library/${roomState.libraryTrackId}/lyrics`);
+          if (lrcRes.ok) {
+            const lrcText = await lrcRes.text();
+            if (!active) return;
+            if (lrcText) {
+              const { lines, meta } = parseLrc(lrcText);
+              setLyrics(lines);
+              setLrcMeta((prev) => ({
+                title: meta.title || prev.title,
+                artist: meta.artist || prev.artist,
+              }));
+              return;
+            }
+          }
+        } catch { /* missing lyrics is non-fatal */ }
+
+        if (active) {
+          // If R2 track has no lyrics, keep empty lyrics but NEVER wipe activeTrack!
+          setLyrics(roomState.lyrics || []);
+        }
+        return;
+      }
+
+      // 2. Legacy local library route
+      try {
+        const res = await fetch(`${SERVER_URL || ''}/api/library/tracks/${roomState.libraryTrackId}`);
         if (!res.ok) throw new Error('No track details');
-        return res.json();
-      })
-      .then((data) => {
+        const data = await res.json();
         if (!active || !data.track) return;
         const track = data.track;
         setActiveTrack(track);
@@ -273,18 +302,19 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
         } else {
           setLyrics([]);
         }
-      })
-      .catch(() => {
-        if (active) {
+      } catch {
+        if (active && !activeTrack) {
           setLyrics([]);
-          setActiveTrack(null);
         }
-      });
+      }
+    };
+
+    loadTrackLyrics();
 
     return () => {
       active = false;
     };
-  }, [roomState.libraryTrackId]);
+  }, [roomState.libraryTrackId, roomState.coverFilename, roomState.lyrics, activeTrack]);
 
   const playTrack = useCallback(async (track: any) => {
     if (!adapter) return;
@@ -295,27 +325,55 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
     setSongName(track.title);
     setActiveTrack(track);
 
-    emitLoadLibraryTrack(track.id);
+    // Legacy/local catalog track requires emitLoadLibraryTrack to slice chunks from disk
+    // R2/cloud tracks stream directly from R2 via /api/library/tracks/:id/download and must NOT emit legacy catalog request
+    if (track.source !== 'r2') {
+      emitLoadLibraryTrack(track.id);
+    }
 
-    // Fetch fresh track metadata to get lrcText (may not be on the cached list object)
+    // Fetch fresh track metadata / lyrics
     let lyricsLines: any[] = [];
     let lyricsMeta: any = { title: track.title, artist: track.artist };
-    try {
-      const res = await fetch(`${SERVER_URL || ''}/api/library/tracks/${track.id}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.track?.lrcText) {
-          const parsed = parseLrc(data.track.lrcText);
-          lyricsLines = parsed.lines;
-          lyricsMeta = {
-            title: parsed.meta.title || track.title,
-            artist: parsed.meta.artist || track.artist,
-          };
-          setLyrics(parsed.lines);
-          setLrcMeta(lyricsMeta);
+
+    if (track.source === 'r2') {
+      // Authoritative R2 lyrics source
+      try {
+        const lrcRes = await fetch(`${SERVER_URL || ''}/library/${track.id}/lyrics`);
+        if (lrcRes.ok) {
+          const lrcText = await lrcRes.text();
+          if (lrcText) {
+            const parsed = parseLrc(lrcText);
+            lyricsLines = parsed.lines;
+            lyricsMeta = {
+              title: parsed.meta.title || track.title,
+              artist: parsed.meta.artist || track.artist,
+            };
+          }
         }
+      } catch {
+        // Missing lyrics file results in empty lyrics, never wipes track
       }
-    } catch { /* non-fatal */ }
+      setLyrics(lyricsLines);
+      setLrcMeta(lyricsMeta);
+    } else {
+      // Legacy local library route
+      try {
+        const res = await fetch(`${SERVER_URL || ''}/api/library/tracks/${track.id}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.track?.lrcText) {
+            const parsed = parseLrc(data.track.lrcText);
+            lyricsLines = parsed.lines;
+            lyricsMeta = {
+              title: parsed.meta.title || track.title,
+              artist: parsed.meta.artist || track.artist,
+            };
+            setLyrics(parsed.lines);
+            setLrcMeta(lyricsMeta);
+          }
+        }
+      } catch { /* non-fatal */ }
+    }
 
     // Broadcast lyrics + metadata to all listeners via room state
     emitUpdateTrackMetadata({
@@ -446,8 +504,11 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
       ...track,
       mimeType,
       coverFilename,
+      source: 'r2',
     };
 
+    setActiveTab('player');
+    setMobileTab('player');
     playTrack(normalizedTrack);
   }, [playTrack]);
 
@@ -625,7 +686,7 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
 
   return (
     <div className="relative min-h-screen bg-noir-black grain-overlay flex flex-col overflow-hidden">
-      <DynamicBackground coverFilename={activeTrack?.coverFilename || null} songName={roomState.songName || songName || null} />
+      <DynamicBackground coverFilename={activeTrack?.coverFilename || roomState.coverFilename || null} songName={roomState.songName || songName || null} />
       <GlowSpotlight />
       <ToastContainer toasts={toast.toasts} onDismiss={toast.dismiss} />
 
@@ -866,18 +927,32 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
             {/* Now hosting */}
             {!isUploading && (
               <GlassPanel className="p-4 space-y-4" glow={audioReady}>
-                <div>
-                  <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase mb-1">Now Hosting</p>
-                  <p className="font-display text-lg text-noir-white leading-snug">
-                    {audioReady ? songName : 'No Song Loaded'}
-                  </p>
-                  <p className="font-body text-sm text-noir-dim mt-0.5">
-                    {audioReady && lrcMeta.artist
-                      ? lrcMeta.artist
-                      : audioReady
-                      ? 'Unknown Artist'
-                      : 'Upload a file or choose from Library'}
-                  </p>
+                <div className="flex items-center gap-3.5">
+                  <div className="w-14 h-14 rounded-xl bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 flex items-center justify-center shadow-sm">
+                    {(activeTrack?.coverFilename || roomState.coverFilename) ? (
+                      <img
+                        src={`${SERVER_URL || ''}/api/library/covers/${activeTrack?.coverFilename || roomState.coverFilename}`}
+                        alt="Cover"
+                        className="w-full h-full object-cover"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                      />
+                    ) : (
+                      <span className="text-xl opacity-35 text-accent-gold">🎵</span>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase mb-1">Now Hosting</p>
+                    <p className="font-display text-lg text-noir-white leading-snug truncate">
+                      {audioReady ? songName : 'No Song Loaded'}
+                    </p>
+                    <p className="font-body text-sm text-noir-dim mt-0.5 truncate">
+                      {audioReady && lrcMeta.artist
+                        ? lrcMeta.artist
+                        : audioReady
+                        ? 'Unknown Artist'
+                        : 'Upload a file or choose from Library'}
+                    </p>
+                  </div>
                 </div>
 
                 {/* Hidden native audio element (managed by parent App) */}
@@ -1200,11 +1275,23 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
             <>
               {/* Song header */}
               {songName && (
-                <div className="px-8 pt-8 pb-2 shrink-0">
-                  <h1 className="font-display text-3xl text-noir-white">{lrcMeta.title || songName}</h1>
-                  {lrcMeta.artist && (
-                    <p className="font-body text-noir-ash mt-1">{lrcMeta.artist}</p>
+                <div className="px-8 pt-8 pb-2 shrink-0 flex items-center gap-4">
+                  {(activeTrack?.coverFilename || roomState.coverFilename) && (
+                    <div className="w-16 h-16 rounded-xl bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 shadow-md">
+                      <img
+                        src={`${SERVER_URL || ''}/api/library/covers/${activeTrack?.coverFilename || roomState.coverFilename}`}
+                        alt="Cover"
+                        className="w-full h-full object-cover"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                      />
+                    </div>
                   )}
+                  <div className="min-w-0">
+                    <h1 className="font-display text-3xl text-noir-white truncate">{lrcMeta.title || songName}</h1>
+                    {lrcMeta.artist && (
+                      <p className="font-body text-noir-ash mt-1 truncate">{lrcMeta.artist}</p>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -1342,14 +1429,28 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
 
             {/* Now Hosting controls */}
             <GlassPanel className="p-4 space-y-4">
-              <div>
-                <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase mb-1">Now Hosting</p>
-                <p className="font-display text-lg text-noir-white leading-snug">
-                  {audioReady ? songName : 'No Song Loaded'}
-                </p>
-                {audioReady && lrcMeta.artist && (
-                  <p className="font-body text-xs text-noir-dim mt-0.5">{lrcMeta.artist}</p>
-                )}
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-lg bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 flex items-center justify-center shadow-sm">
+                  {(activeTrack?.coverFilename || roomState.coverFilename) ? (
+                    <img
+                      src={`${SERVER_URL || ''}/api/library/covers/${activeTrack?.coverFilename || roomState.coverFilename}`}
+                      alt="Cover"
+                      className="w-full h-full object-cover"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                  ) : (
+                    <span className="text-lg opacity-35 text-accent-gold">🎵</span>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="font-mono text-[10px] tracking-widest text-noir-ash uppercase mb-1">Now Hosting</p>
+                  <p className="font-display text-base text-noir-white leading-snug truncate">
+                    {audioReady ? songName : 'No Song Loaded'}
+                  </p>
+                  {audioReady && lrcMeta.artist && (
+                    <p className="font-body text-xs text-noir-dim mt-0.5 truncate">{lrcMeta.artist}</p>
+                  )}
+                </div>
               </div>
 
               {/* Progress */}
@@ -1484,11 +1585,23 @@ export function HostView({ roomId, displayName, onLeave, adapter }: Props) {
         {mobileTab === 'lyrics' && (
           <div className="flex-1 flex flex-col h-[70vh] min-h-[400px]">
             {songName && (
-              <div className="px-4 py-2 shrink-0">
-                <h1 className="font-display text-2xl text-noir-white">{lrcMeta.title || songName}</h1>
-                {lrcMeta.artist && (
-                  <p className="font-body text-xs text-noir-ash mt-0.5">{lrcMeta.artist}</p>
+              <div className="px-4 py-2 shrink-0 flex items-center gap-3">
+                {(activeTrack?.coverFilename || roomState.coverFilename) && (
+                  <div className="w-12 h-12 rounded-lg bg-noir-graphite border border-noir-border/60 overflow-hidden shrink-0 shadow-sm">
+                    <img
+                      src={`${SERVER_URL || ''}/api/library/covers/${activeTrack?.coverFilename || roomState.coverFilename}`}
+                      alt="Cover"
+                      className="w-full h-full object-cover"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                  </div>
                 )}
+                <div className="min-w-0">
+                  <h1 className="font-display text-2xl text-noir-white truncate">{lrcMeta.title || songName}</h1>
+                  {lrcMeta.artist && (
+                    <p className="font-body text-xs text-noir-ash mt-0.5 truncate">{lrcMeta.artist}</p>
+                  )}
+                </div>
               </div>
             )}
             <LyricsRenderer
