@@ -33,6 +33,9 @@ const { validateRoomId, validateChunkIndex, validateChunkUpload, validateChunkFi
 const app    = express();
 const server = http.createServer(app);
 
+// Trust first proxy (Render, Cloudflare, Heroku) for accurate protocol and client IP
+app.set('trust proxy', 1);
+
 const corsOrigin = process.env.CORS_ORIGIN || '*';
 const maxChunkMB = parseInt(process.env.MAX_CHUNK_SIZE_MB || '10', 10);
 

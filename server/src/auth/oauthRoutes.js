@@ -16,22 +16,38 @@ const PROVIDERS = {
   }
 };
 
+const PROD_REDIRECT_URI = 'https://noirsync.onrender.com/api/music/callback/spotify';
+const PROD_FRONTEND_URL = 'https://noirsync.onrender.com';
+
 function getFrontendUrl() {
   if (process.env.CLIENT_URL) {
     return process.env.CLIENT_URL.replace(/\/+$/, '');
   }
-  if (process.env.NODE_ENV === 'production' && process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== '*') {
-    return process.env.CORS_ORIGIN.replace(/\/+$/, '');
+  if (process.env.NODE_ENV === 'production') {
+    if (process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== '*') {
+      return process.env.CORS_ORIGIN.replace(/\/+$/, '');
+    }
+    return PROD_FRONTEND_URL;
   }
   return 'http://localhost:5173';
 }
 
 function getRedirectUri(req, provider) {
-  if (process.env.SPOTIFY_REDIRECT_URI && provider === 'spotify') {
-    return process.env.SPOTIFY_REDIRECT_URI;
+  if (provider === 'spotify') {
+    // 1. Production environment: ALWAYS return the exact production redirect URI unconditionally
+    if (process.env.NODE_ENV === 'production') {
+      return PROD_REDIRECT_URI;
+    }
+
+    // 2. Non-production environments: allow SPOTIFY_REDIRECT_URI override
+    if (process.env.SPOTIFY_REDIRECT_URI) {
+      return process.env.SPOTIFY_REDIRECT_URI;
+    }
   }
-  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-  const host = req.headers.host || 'localhost:3001';
+
+  // 3. Development / test fallback: dynamically derived from request
+  const protocol = req?.headers?.['x-forwarded-proto'] || req?.protocol || 'http';
+  const host = req?.headers?.host || 'localhost:3001';
   return `${protocol}://${host}/api/music/callback/${provider}`;
 }
 
@@ -223,5 +239,8 @@ router.get('/accounts', async (req, res) => {
 
   res.json(accounts);
 });
+
+router.getRedirectUri = getRedirectUri;
+router.getFrontendUrl = getFrontendUrl;
 
 module.exports = router;

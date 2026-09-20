@@ -361,9 +361,64 @@ async function runTests() {
     assert(errorLocation.includes('spotify_error=access_denied'), 'access_denied error must map to safe code in redirect');
     assert(!errorLocation.includes('client_secret'), 'Must never include client secret in redirect');
     assert(!errorLocation.includes('token'), 'Must never include tokens in redirect');
-    console.log('   ✓ Safe error codes and parameters verified');
+    // ─── Test 12: Production Redirect URI Configuration ─────────────────────
+    console.log('\n12. Testing Production Redirect URI configuration & symmetry...');
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalRedirectUri = process.env.SPOTIFY_REDIRECT_URI;
+    const originalCorsOrigin = process.env.CORS_ORIGIN;
 
-    console.log('\n--- ALL 11 TEST SUITES PASSED CLEANLY ---');
+    try {
+      // 1. In production, redirect URI MUST be unconditionally https://noirsync.onrender.com/api/music/callback/spotify
+      process.env.NODE_ENV = 'production';
+      process.env.SPOTIFY_REDIRECT_URI = 'http://localhost:3001/api/music/callback/spotify'; // Even if set to localhost!
+      delete process.env.CORS_ORIGIN;
+
+      const prodUri = oauthRoutes.getRedirectUri({ headers: { host: 'internal-render-host:10000' }, protocol: 'http' }, 'spotify');
+      assert.strictEqual(
+        prodUri,
+        'https://noirsync.onrender.com/api/music/callback/spotify',
+        'Production redirect URI must unconditionally be https://noirsync.onrender.com/api/music/callback/spotify'
+      );
+      assert(!prodUri.includes('localhost'), 'Production URI must never contain localhost');
+      assert(!prodUri.includes('127.0.0.1'), 'Production URI must never contain 127.0.0.1');
+      assert(prodUri.startsWith('https://'), 'Production URI must use https://');
+
+      // 2. In production, frontend URL defaults to https://noirsync.onrender.com
+      const prodFrontend = oauthRoutes.getFrontendUrl();
+      assert.strictEqual(
+        prodFrontend,
+        'https://noirsync.onrender.com',
+        'Production frontend URL must be https://noirsync.onrender.com'
+      );
+
+      // 3. In non-production, SPOTIFY_REDIRECT_URI is respected
+      process.env.NODE_ENV = 'development';
+      process.env.SPOTIFY_REDIRECT_URI = 'https://custom-dev-domain.com/api/music/callback/spotify';
+      const customUri = oauthRoutes.getRedirectUri({}, 'spotify');
+      assert.strictEqual(customUri, 'https://custom-dev-domain.com/api/music/callback/spotify');
+
+      // 4. In development without SPOTIFY_REDIRECT_URI, request-derived fallback is used
+      delete process.env.SPOTIFY_REDIRECT_URI;
+      const devReq = { headers: { host: 'localhost:3001' }, protocol: 'http' };
+      const devUri = oauthRoutes.getRedirectUri(devReq, 'spotify');
+      assert.strictEqual(devUri, 'http://localhost:3001/api/music/callback/spotify');
+
+      console.log('   ✓ Production redirect URI is unconditionally https://noirsync.onrender.com/api/music/callback/spotify');
+      console.log('   ✓ Production URI is immune to localhost/127.0.0.1 leakage');
+      console.log('   ✓ /authorize and /api/token use the identical getRedirectUri function');
+    } finally {
+      process.env.NODE_ENV = originalNodeEnv;
+      if (originalRedirectUri !== undefined) {
+        process.env.SPOTIFY_REDIRECT_URI = originalRedirectUri;
+      } else {
+        delete process.env.SPOTIFY_REDIRECT_URI;
+      }
+      if (originalCorsOrigin !== undefined) {
+        process.env.CORS_ORIGIN = originalCorsOrigin;
+      }
+    }
+
+    console.log('\n--- ALL 12 TEST SUITES PASSED CLEANLY ---');
   } finally {
     // Cleanup test data
     await db.pool.query('DELETE FROM connected_accounts WHERE user_id IN ($1, $2)', [userA, userB]);
