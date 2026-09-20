@@ -130,14 +130,14 @@ async function runRegression() {
     assert.ok(userBAddBlocked, 'User B adding User A private non-cloud track must be rejected with HTTP 404');
     console.log('   ✓ User B cannot add User A private non-cloud track to User B playlist (HTTP 404).\n');
 
-    // ── TEST 3: Orphaned local track (user_id = NULL, audio_key = NULL) ──
-    console.log('4. Testing orphaned/legacy local track (user_id = NULL, audio_key = NULL)...');
+    // ── TEST 3: Orphaned local track (user_id = NULL) cannot be added even with audio_key ──
+    console.log('4. Testing orphaned/legacy local track (user_id = NULL) even with audio_key...');
     const orphanedLocalTrack = await db.insertTrack({
       id: `trk_orph_${testRunId}`,
-      title: 'Legacy Orphaned Local Track',
+      title: 'Legacy Orphaned Local Track With Audio Key',
       artist: 'Unknown Artist',
       duration: 150,
-      audio_key: null,
+      audio_key: 'legacy/orphaned/audio.mp3',
       provider: 'local',
       user_id: null
     });
@@ -150,8 +150,8 @@ async function runRegression() {
         orphanedAddBlocked = true;
       }
     }
-    assert.ok(orphanedAddBlocked, 'Orphaned local track with user_id=NULL must NOT be addable to playlists');
-    console.log('   ✓ Local track with user_id=NULL and audio_key=NULL cannot be newly added (HTTP 404).\n');
+    assert.ok(orphanedAddBlocked, 'Orphaned local track with user_id=NULL must NOT be addable to playlists even with audio_key');
+    console.log('   ✓ Local track with user_id=NULL cannot be added even if audio_key exists (HTTP 404).\n');
 
     // ── TEST 4: Canonical provider tracks (user_id = NULL) shared across users ──
     console.log('5. Testing canonical provider tracks (spotify, youtube, apple)...');

@@ -408,7 +408,7 @@ app.get(['/api/library/tracks/:id/download', '/api/library/tracks/:id/download/:
     // Check if it exists in the R2 PostgreSQL database
     try {
       const r2Track = await db.getTrack(id);
-      if (r2Track) {
+      if (r2Track && r2Track.audio_key) {
         const r2 = require('./r2');
         try {
           const range = req.headers.range;
