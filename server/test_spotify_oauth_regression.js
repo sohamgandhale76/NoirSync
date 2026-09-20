@@ -418,7 +418,237 @@ async function runTests() {
       }
     }
 
-    console.log('\n--- ALL 12 TEST SUITES PASSED CLEANLY ---');
+    // ─── Test 13: Profile error mapping unit verification ────────────────────
+    console.log('\n13. Testing safe Spotify profile error mapping (401, 403 premium, 403 forbidden, 429, other)...');
+    assert.strictEqual(
+      oauthRoutes.mapProfileError(401, 'Unauthorized'),
+      'spotify_unauthorized',
+      '401 must map to spotify_unauthorized'
+    );
+    assert.strictEqual(
+      oauthRoutes.mapProfileError(403, 'Active premium subscription required for the owner of the app. When the subscription status changes, it can take a few hours before requests are allowed again.'),
+      'spotify_premium_required',
+      '403 with premium message must map to spotify_premium_required'
+    );
+    assert.strictEqual(
+      oauthRoutes.mapProfileError(403, 'User not registered in Developer Dashboard'),
+      'spotify_forbidden',
+      '403 without premium message must map to spotify_forbidden'
+    );
+    assert.strictEqual(
+      oauthRoutes.mapProfileError(429, 'Rate limit exceeded'),
+      'spotify_rate_limited',
+      '429 must map to spotify_rate_limited'
+    );
+    assert.strictEqual(
+      oauthRoutes.mapProfileError(500, 'Internal server error'),
+      'profile_fetch_failed',
+      '500 must map to profile_fetch_failed'
+    );
+    console.log('   ✓ mapProfileError correctly categorizes all Spotify status and error payloads');
+
+    // ─── Test 14: Spotify 2026 schema account linking (account_id preference & safety) ────────
+    console.log('\n14. Testing Spotify 2026 immutable account_id requirement...');
+    const originalFetch = globalThis.fetch;
+    const testStateSuccess = 'state_acc_id_' + uuidv4().replace(/-/g, '');
+    await db.pool.query(
+      'INSERT INTO oauth_states (state, user_id, provider, created_at) VALUES ($1, $2, $3, $4)',
+      [testStateSuccess, userA, 'spotify', Date.now()]
+    );
+
+    try {
+      globalThis.fetch = async (url, opts) => {
+        const urlStr = String(url);
+        if (urlStr.includes('accounts.spotify.com/api/token')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              access_token: 'mock_access_token_123',
+              refresh_token: 'mock_refresh_token_456',
+              expires_in: 3600
+            })
+          };
+        }
+        if (urlStr.includes('api.spotify.com/v1/me')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              account_id: 'immutable_spotify_account_999',
+              id: 'legacy_spotify_id_111',
+              display_name: 'Modern Spotify User'
+            })
+          };
+        }
+        return originalFetch(url, opts);
+      };
+
+      const successRes = await originalFetch(`${baseUrl}/api/music/callback/spotify?code=mock_code&state=${testStateSuccess}`, {
+        headers: { Cookie: sessionCookieA },
+        redirect: 'manual'
+      });
+      assert.strictEqual(successRes.status, 302);
+      assert(successRes.headers.get('location').includes('spotify_connected=true'), 'Should connect successfully');
+
+      const savedAccount = await db.pool.query(
+        'SELECT * FROM connected_accounts WHERE user_id = $1 AND provider = $2',
+        [userA, 'spotify']
+      );
+      assert.strictEqual(savedAccount.rows.length, 1);
+      assert.strictEqual(
+        savedAccount.rows[0].provider_account_id,
+        'immutable_spotify_account_999',
+        'Must use immutable account_id instead of legacy id for account linking'
+      );
+      assert.strictEqual(savedAccount.rows[0].display_name, 'Modern Spotify User');
+      console.log('   ✓ Uses immutable account_id as primary linking identifier, ignoring legacy id');
+
+      // A2. Verify displayName falls back to 'Spotify User' when display_name is missing/empty
+      const testStateNoName = 'state_no_name_' + uuidv4().replace(/-/g, '');
+      await db.pool.query(
+        'INSERT INTO oauth_states (state, user_id, provider, created_at) VALUES ($1, $2, $3, $4)',
+        [testStateNoName, userA, 'spotify', Date.now()]
+      );
+
+      globalThis.fetch = async (url, opts) => {
+        const urlStr = String(url);
+        if (urlStr.includes('accounts.spotify.com/api/token')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              access_token: 'mock_access_token_123',
+              refresh_token: 'mock_refresh_token_456',
+              expires_in: 3600
+            })
+          };
+        }
+        if (urlStr.includes('api.spotify.com/v1/me')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              account_id: 'immutable_spotify_account_999',
+              id: 'legacy_spotify_id_111'
+              // display_name is omitted
+            })
+          };
+        }
+        return originalFetch(url, opts);
+      };
+
+      const noNameRes = await originalFetch(`${baseUrl}/api/music/callback/spotify?code=mock_code&state=${testStateNoName}`, {
+        headers: { Cookie: sessionCookieA },
+        redirect: 'manual'
+      });
+      assert.strictEqual(noNameRes.status, 302);
+      const updatedAccount = await db.pool.query(
+        'SELECT * FROM connected_accounts WHERE user_id = $1 AND provider = $2',
+        [userA, 'spotify']
+      );
+      assert.strictEqual(
+        updatedAccount.rows[0].display_name,
+        'Spotify User',
+        'displayName must fall back to "Spotify User" rather than exposing account_id'
+      );
+      console.log('   ✓ displayName falls back to "Spotify User" instead of account_id');
+
+      // B. Verify callback with mock fetch returning profile WITHOUT account_id (legacy id only)
+      const testStateMissing = 'state_missing_acc_' + uuidv4().replace(/-/g, '');
+      await db.pool.query(
+        'INSERT INTO oauth_states (state, user_id, provider, created_at) VALUES ($1, $2, $3, $4)',
+        [testStateMissing, userB, 'spotify', Date.now()]
+      );
+
+      globalThis.fetch = async (url, opts) => {
+        const urlStr = String(url);
+        if (urlStr.includes('accounts.spotify.com/api/token')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              access_token: 'mock_access_token_123',
+              refresh_token: 'mock_refresh_token_456',
+              expires_in: 3600
+            })
+          };
+        }
+        if (urlStr.includes('api.spotify.com/v1/me')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              id: 'legacy_only_spotify_id',
+              display_name: 'Legacy User'
+            })
+          };
+        }
+        return originalFetch(url, opts);
+      };
+
+      const missingRes = await originalFetch(`${baseUrl}/api/music/callback/spotify?code=mock_code&state=${testStateMissing}`, {
+        headers: { Cookie: sessionCookieB },
+        redirect: 'manual'
+      });
+      assert.strictEqual(missingRes.status, 302);
+      assert(
+        missingRes.headers.get('location').includes('spotify_error=profile_fetch_failed'),
+        'Missing account_id must safely fail with profile_fetch_failed'
+      );
+
+      const userBCheck = await db.pool.query(
+        'SELECT * FROM connected_accounts WHERE user_id = $1 AND provider = $2',
+        [userB, 'spotify']
+      );
+      assert.strictEqual(userBCheck.rows.length, 0, 'No account row should be persisted when account_id is missing');
+      console.log('   ✓ Fails safely and rejects persistence when account_id is missing');
+
+      // C. Verify callback when /v1/me returns 403 with Premium required message
+      const testStatePremium = 'state_prem_' + uuidv4().replace(/-/g, '');
+      await db.pool.query(
+        'INSERT INTO oauth_states (state, user_id, provider, created_at) VALUES ($1, $2, $3, $4)',
+        [testStatePremium, userB, 'spotify', Date.now()]
+      );
+
+      globalThis.fetch = async (url, opts) => {
+        const urlStr = String(url);
+        if (urlStr.includes('accounts.spotify.com/api/token')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              access_token: 'mock_access_token_123',
+              refresh_token: 'mock_refresh_token_456',
+              expires_in: 3600
+            })
+          };
+        }
+        if (urlStr.includes('api.spotify.com/v1/me')) {
+          return {
+            ok: false,
+            status: 403,
+            text: async () => 'Active premium subscription required for the owner of the app. When the subscription status changes, it can take a few hours before requests are allowed again.'
+          };
+        }
+        return originalFetch(url, opts);
+      };
+
+      const premRes = await originalFetch(`${baseUrl}/api/music/callback/spotify?code=mock_code&state=${testStatePremium}`, {
+        headers: { Cookie: sessionCookieB },
+        redirect: 'manual'
+      });
+      assert.strictEqual(premRes.status, 302);
+      assert(
+        premRes.headers.get('location').includes('spotify_error=spotify_premium_required'),
+        '403 with premium message must redirect with spotify_error=spotify_premium_required'
+      );
+      console.log('   ✓ Callback safely redirects with spotify_error=spotify_premium_required on 403 Premium message');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    console.log('\n--- ALL 14 TEST SUITES PASSED CLEANLY ---');
   } finally {
     // Cleanup test data
     await db.pool.query('DELETE FROM connected_accounts WHERE user_id IN ($1, $2)', [userA, userB]);

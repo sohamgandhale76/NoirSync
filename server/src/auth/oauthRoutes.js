@@ -51,6 +51,21 @@ function getRedirectUri(req, provider) {
   return `${protocol}://${host}/api/music/callback/${provider}`;
 }
 
+function mapProfileError(status, safeMessage = '') {
+  const isPremiumRequired = /premium.*required/i.test(safeMessage) ||
+                            /active premium subscription/i.test(safeMessage);
+
+  if (status === 401) {
+    return 'spotify_unauthorized';
+  } else if (status === 403) {
+    return isPremiumRequired ? 'spotify_premium_required' : 'spotify_forbidden';
+  } else if (status === 429) {
+    return 'spotify_rate_limited';
+  }
+  return 'profile_fetch_failed';
+}
+
+
 // Start OAuth Flow
 router.get('/connect/:provider', async (req, res) => {
   const provider = req.params.provider;
@@ -162,12 +177,46 @@ router.get('/callback/:provider', async (req, res) => {
       });
       
       if (!profileRes.ok) {
-        throw new Error('profile_fetch_failed');
+        const status = profileRes.status;
+        let errorBody = '';
+        try {
+          errorBody = await profileRes.text();
+        } catch {
+          errorBody = '';
+        }
+
+        let parsedMessage = '';
+        try {
+          const parsed = JSON.parse(errorBody);
+          parsedMessage = parsed?.error?.message || parsed?.error_description || parsed?.error || '';
+        } catch {
+          parsedMessage = errorBody;
+        }
+
+        const safeMessage = (typeof parsedMessage === 'string' ? parsedMessage : '').trim();
+        logger.warn('Spotify profile fetch failed', {
+          status,
+          error: safeMessage.slice(0, 200)
+        });
+
+        const safeErrorCode = mapProfileError(status, safeMessage);
+        const profileError = new Error(safeErrorCode);
+        profileError.code = safeErrorCode;
+        throw profileError;
       }
 
       const profile = await profileRes.json();
-      providerAccountId = profile.id;
-      displayName = profile.display_name || profile.id;
+      if (!profile || typeof profile !== 'object' || !profile.account_id) {
+        logger.error('Spotify profile missing required immutable account_id', {
+          hasLegacyId: Boolean(profile && profile.id)
+        });
+        const missingIdError = new Error('profile_fetch_failed');
+        missingIdError.code = 'profile_fetch_failed';
+        throw missingIdError;
+      }
+
+      providerAccountId = profile.account_id;
+      displayName = profile.display_name || 'Spotify User';
     }
 
     // Check if this provider account is already linked to another NoirSync user
@@ -204,7 +253,23 @@ router.get('/callback/:provider', async (req, res) => {
       return res.redirect(`${frontendUrl}/?spotify_error=account_already_linked`);
     }
     logger.error('OAuth token exchange error', { error: err.message });
-    const safeError = err.message === 'profile_fetch_failed' ? 'profile_fetch_failed' : 'token_exchange_failed';
+
+    const KNOWN_SAFE_ERRORS = [
+      'spotify_premium_required',
+      'spotify_unauthorized',
+      'spotify_forbidden',
+      'spotify_rate_limited',
+      'profile_fetch_failed',
+      'token_exchange_failed'
+    ];
+
+    let safeError = 'token_exchange_failed';
+    if (KNOWN_SAFE_ERRORS.includes(err.code)) {
+      safeError = err.code;
+    } else if (KNOWN_SAFE_ERRORS.includes(err.message)) {
+      safeError = err.message;
+    }
+
     res.redirect(`${frontendUrl}/?spotify_error=${safeError}`);
   }
 });
@@ -242,5 +307,6 @@ router.get('/accounts', async (req, res) => {
 
 router.getRedirectUri = getRedirectUri;
 router.getFrontendUrl = getFrontendUrl;
+router.mapProfileError = mapProfileError;
 
 module.exports = router;

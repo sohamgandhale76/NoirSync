@@ -698,6 +698,14 @@ function SpotifyDiscoveryView({
         account_already_linked: 'This Spotify account is already linked to another NoirSync user.',
         token_refresh_failed: 'Spotify authorization expired. Please reconnect your account.',
         provider_unavailable: 'Spotify service is currently unavailable.',
+        spotify_premium_required:
+          'Spotify requires the Developer App owner to have an active Premium subscription. Spotify may take a few hours to recognize a newly activated subscription.',
+        spotify_unauthorized:
+          'Spotify authorization expired or was rejected. Please connect Spotify again.',
+        spotify_forbidden:
+          'Spotify access was forbidden. Please verify Developer App permissions or user allowlist.',
+        spotify_rate_limited:
+          'Spotify is temporarily rate-limiting this app. Please try again later.',
       };
       setAuthNotice({
         type: 'error',
