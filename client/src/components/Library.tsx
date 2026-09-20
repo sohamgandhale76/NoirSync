@@ -22,6 +22,7 @@ interface R2Track {
   cover_key: string | null;
   lyrics_key: string | null;
   uploaded_at: number;
+  user_id?: string | null;
 }
 
 interface StorageStats {
@@ -99,44 +100,26 @@ function FormatBadge({ format }: { format: string | null }) {
   );
 }
 
-// ─── Storage Bar ──────────────────────────────────────────────────────────────
+// ─── Shared Library Banner ───────────────────────────────────────────────────
 
-function StorageBar({ storage }: { storage: StorageStats | null }) {
-  if (!storage) return null;
-  const pct = Math.min(parseFloat(storage.percentUsed) || 0, 100);
-  const isFull = storage.isFull;
-  const isWarn = pct >= 90 && !isFull;
-  const barGrad = isFull
-    ? 'linear-gradient(90deg, #ef4444, #b91c1c)'
-    : isWarn
-    ? 'linear-gradient(90deg, #f59e0b, #d97706)'
-    : 'linear-gradient(90deg, #c8a96e, #d4882a)';
-  const textColor = isFull ? 'text-red-400' : isWarn ? 'text-amber-400' : 'text-accent-gold';
-
+function SharedLibraryBanner({ trackCount }: { trackCount: number }) {
   return (
-    <div className="glass-panel border-b border-noir-border/50 px-4 sm:px-6 py-3 flex flex-wrap sm:flex-nowrap items-center gap-3 sm:gap-4 shrink-0">
-      <div className="flex items-center gap-2 shrink-0">
-        <span className="text-accent-gold text-sm">☁</span>
-        <span className="font-ui text-xs font-semibold uppercase tracking-wider text-noir-silver">
-          {storage.isGuest ? 'Cloud Storage (Guest)' : 'My Cloud Storage'}
-        </span>
+    <div className="glass-panel border-b border-noir-border/50 px-4 sm:px-6 py-3 flex items-center justify-between gap-4 shrink-0">
+      <div className="flex items-center gap-2.5 shrink-0">
+        <span className="text-accent-gold text-base">☁</span>
+        <div>
+          <span className="font-ui text-xs font-semibold uppercase tracking-wider text-noir-silver">
+            Cloud Library
+          </span>
+          <span className="hidden sm:inline text-noir-dim text-xs mx-2">·</span>
+          <span className="hidden sm:inline font-ui text-xs text-noir-ash">
+            Shared NoirSync cloud audio
+          </span>
+        </div>
       </div>
-      <div className="flex-1 min-w-[140px] h-2 bg-noir-graphite rounded-full overflow-hidden border border-noir-border/40">
-        <div
-          className="h-full rounded-full transition-all duration-700 ease-out"
-          style={{
-            width: `${pct}%`,
-            background: barGrad,
-            boxShadow: pct > 0 ? (isFull ? '0 0 8px rgba(239,68,68,0.4)' : '0 0 8px rgba(200,169,110,0.3)') : 'none',
-          }}
-        />
-      </div>
-      <div className="flex items-center gap-2 font-mono text-xs shrink-0">
-        <span className={`font-semibold ${textColor}`}>
-          {storage.usedGB} <span className="text-noir-dim font-normal">/ {storage.limitGB} GB</span>
-        </span>
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-noir-graphite border border-noir-border/60 text-noir-ash">
-          {pct.toFixed(1)}%
+      <div className="flex items-center gap-2 font-mono text-xs text-noir-dim shrink-0">
+        <span className="px-2 py-0.5 rounded bg-noir-graphite border border-noir-border/60 text-noir-ash">
+          {trackCount} {trackCount === 1 ? 'track' : 'tracks'} available
         </span>
       </div>
     </div>
@@ -146,7 +129,7 @@ function StorageBar({ storage }: { storage: StorageStats | null }) {
 // ─── Track Card ───────────────────────────────────────────────────────────────
 
 function TrackCard({
-  track, onDelete, onPlay, onAddToPlaylist, onUploadLyrics, isPlaying, isLoading,
+  track, onDelete, onPlay, onAddToPlaylist, onUploadLyrics, isPlaying, isLoading, canDelete,
 }: {
   track: R2Track;
   onDelete: (id: string) => void;
@@ -155,6 +138,7 @@ function TrackCard({
   onUploadLyrics?: (track: R2Track, file: File) => void;
   isPlaying: boolean;
   isLoading: boolean;
+  canDelete?: boolean;
 }) {
   const base = SERVER_URL || '';
   const coverUrl = track.cover_key ? `${base}/library/${track.id}/cover` : null;
@@ -277,13 +261,15 @@ function TrackCard({
           </label>
         )}
 
-        <button
-          onClick={() => onDelete(track.id)}
-          title="Delete track"
-          className="btn-noir h-8 w-8 rounded-lg p-0 border border-red-900/40 text-red-400 hover:text-red-300 hover:bg-red-950/20 flex items-center justify-center text-xs"
-        >
-          🗑
-        </button>
+        {canDelete && (
+          <button
+            onClick={() => onDelete(track.id)}
+            title="Delete track"
+            className="btn-noir h-8 w-8 rounded-lg p-0 border border-red-900/40 text-red-400 hover:text-red-300 hover:bg-red-950/20 flex items-center justify-center text-xs"
+          >
+            🗑
+          </button>
+        )}
       </div>
     </GlassPanel>
   );
@@ -409,10 +395,10 @@ function UploadSidebar({
       {/* Header */}
       <div className="space-y-1">
         <p className="font-ui text-xs font-semibold text-accent-gold uppercase tracking-wider flex items-center gap-1.5">
-          <span>⬆</span> Upload to My Cloud Library
+          <span>⬆</span> Upload to Cloud Library
         </p>
         <p className="font-ui text-xs text-noir-ash">
-          Add tracks to your private cloud storage
+          Add tracks to the shared Cloud Library
         </p>
       </div>
 
@@ -424,7 +410,7 @@ function UploadSidebar({
             <p className="font-ui text-xs font-semibold uppercase tracking-wider">Account Required</p>
           </div>
           <p className="font-ui text-xs text-noir-ash leading-relaxed">
-            Create a free NoirSync account to upload and permanently save music to your private Cloud Library.
+            Create a free NoirSync account to upload tracks to the shared Cloud Library.
           </p>
           {onOpenAuth && (
             <button
@@ -1240,7 +1226,7 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
               }`}
             >
               <span>☁</span>
-              <span>My Cloud Library</span>
+              <span>Cloud Library</span>
             </button>
             <button
               onClick={() => setLibraryTab('spotify')}
@@ -1263,8 +1249,8 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
 
         {libraryTab === 'cloud' ? (
           <>
-            {/* Storage Bar */}
-            <StorageBar storage={storage} />
+            {/* Shared Library Banner */}
+            <SharedLibraryBanner trackCount={filtered.length} />
 
             {/* Main 2-col split */}
             <div className="flex flex-col lg:flex-row flex-1 overflow-hidden min-h-0">
@@ -1337,11 +1323,12 @@ export function Library({ onSelectTrack, onLoadToRoom }: LibraryProps) {
                           onUploadLyrics={handleUploadLyrics}
                           isPlaying={playingId === track.id}
                           isLoading={loadingTrackId === track.id}
+                          canDelete={Boolean(user?.id && track.user_id && track.user_id === user.id)}
                         />
                       ))}
                       <div className="flex items-center justify-between pt-2 text-noir-dim font-mono text-xs">
                         <span>{filtered.length} track{filtered.length !== 1 ? 's' : ''}</span>
-                        {storage && <span>{storage.usedGB} GB used</span>}
+                        <span>Shared NoirSync Cloud Storage</span>
                       </div>
                     </div>
                   )}

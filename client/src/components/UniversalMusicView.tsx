@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useUniversalCatalog, UniversalTrack } from '../hooks/useUniversalCatalog';
+import { useSpotifyPlayback } from '../hooks/useSpotifyPlayback';
 import { UniversalTrackCard } from './UniversalTrackCard';
 import { AddToPlaylistModal } from './AddToPlaylistModal';
 import { Spinner } from './ui/Spinner';
@@ -28,8 +29,29 @@ export function UniversalMusicView({ onPlayTrack, activeTrackId }: UniversalMusi
     browse,
   } = useUniversalCatalog();
 
+  const {
+    isSpotifyConnected,
+    isPlaying: isSpotifyPlaying,
+    currentTrackUri,
+    error: spotifyError,
+    connectSpotify,
+    playSpotifyTrack,
+    pauseSpotify,
+  } = useSpotifyPlayback();
+
   const [searchInput, setSearchInput] = useState('');
   const [modalTrack, setModalTrack] = useState<UniversalTrack | null>(null);
+
+  const handlePlaySpotify = async (track: UniversalTrack) => {
+    const uri = track.providerTrackId
+      ? `spotify:track:${track.providerTrackId}`
+      : track.id || '';
+    if (isSpotifyPlaying && currentTrackUri === uri) {
+      pauseSpotify();
+    } else {
+      await playSpotifyTrack(uri);
+    }
+  };
 
   // Debounced search
   useEffect(() => {
@@ -80,6 +102,35 @@ export function UniversalMusicView({ onPlayTrack, activeTrackId }: UniversalMusi
             </button>
           )}
         </div>
+
+        {/* Individual Spotify Playback State Banner */}
+        {isSpotifyPlaying && (
+          <div className="max-w-xl p-3 bg-[#1DB954]/10 border border-[#1DB954]/30 rounded-xl text-xs text-[#1DB954] flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="animate-pulse">🟢</span>
+              <span className="font-mono text-[11px]">Spotify Individual Playback Active (Local browser audio only, not synced to room)</span>
+            </div>
+            <button
+              onClick={() => pauseSpotify()}
+              className="px-2.5 py-1 bg-[#1DB954]/20 hover:bg-[#1DB954]/30 border border-[#1DB954]/40 rounded text-[11px] font-mono font-semibold uppercase text-noir-white transition-colors"
+            >
+              Pause
+            </button>
+          </div>
+        )}
+
+        {/* Spotify Error Banner */}
+        {spotifyError && (
+          <div className="max-w-xl p-3 bg-red-950/40 border border-red-500/30 rounded-xl text-xs text-red-300 flex items-center justify-between">
+            <span className="font-mono text-[11px]">⚠️ {spotifyError}</span>
+            <button
+              onClick={() => connectSpotify()}
+              className="underline text-xs text-accent-gold ml-2 shrink-0 font-mono"
+            >
+              Reconnect Spotify
+            </button>
+          </div>
+        )}
 
         {/* Provider Filter Tabs */}
         <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
@@ -133,15 +184,28 @@ export function UniversalMusicView({ onPlayTrack, activeTrackId }: UniversalMusi
               <span>Server-Authoritative Capabilities</span>
             </div>
 
-            {tracks.map((track, idx) => (
-              <UniversalTrackCard
-                key={`${track.provider}-${track.providerTrackId || track.id}-${idx}`}
-                track={track}
-                onPlay={onPlayTrack}
-                onAddToPlaylist={(t) => setModalTrack(t)}
-                isPlaying={activeTrackId === track.id}
-              />
-            ))}
+            {tracks.map((track, idx) => {
+              const spotifyUri = track.provider === 'spotify'
+                ? `spotify:track:${track.providerTrackId || track.id}`
+                : null;
+              const isThisPlaying = track.provider === 'spotify'
+                ? (isSpotifyPlaying && currentTrackUri === spotifyUri)
+                : (activeTrackId === track.id);
+
+              return (
+                <UniversalTrackCard
+                  key={`${track.provider}-${track.providerTrackId || track.id}-${idx}`}
+                  track={track}
+                  onPlay={onPlayTrack}
+                  onPlaySpotify={handlePlaySpotify}
+                  onAddToPlaylist={(t) => setModalTrack(t)}
+                  isPlaying={isThisPlaying}
+                  isSpotifyConnected={isSpotifyConnected}
+                  onConnectSpotify={connectSpotify}
+                  spotifyError={spotifyError}
+                />
+              );
+            })}
           </div>
         )}
       </div>

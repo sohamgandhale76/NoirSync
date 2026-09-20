@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { UniversalTrack } from '../hooks/useUniversalCatalog';
 import { Button } from './ui/Button';
 import { SERVER_URL } from '../lib/constants';
@@ -5,8 +6,12 @@ import { SERVER_URL } from '../lib/constants';
 interface UniversalTrackCardProps {
   track: UniversalTrack;
   onPlay?: (track: UniversalTrack) => void;
+  onPlaySpotify?: (track: UniversalTrack) => void;
   onAddToPlaylist: (track: UniversalTrack) => void;
   isPlaying?: boolean;
+  isSpotifyConnected?: boolean;
+  onConnectSpotify?: () => void;
+  spotifyError?: string | null;
 }
 
 function formatDuration(secs: number | null): string {
@@ -54,11 +59,26 @@ function getProviderBadge(provider: string) {
 export function UniversalTrackCard({
   track,
   onPlay,
+  onPlaySpotify,
   onAddToPlaylist,
   isPlaying = false,
+  isSpotifyConnected = false,
+  onConnectSpotify,
+  spotifyError,
 }: UniversalTrackCardProps) {
   const badge = getProviderBadge(track.provider);
   const { capabilities } = track;
+  const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [track.coverUrl]);
+
+  const resolvedCoverUrl = track.coverUrl
+    ? (track.coverUrl.startsWith('http://') || track.coverUrl.startsWith('https://')
+        ? track.coverUrl
+        : `${SERVER_URL || ''}${track.coverUrl.startsWith('/') ? '' : '/'}${track.coverUrl}`)
+    : null;
 
   const handleDownload = () => {
     if (!capabilities.download || !track.id) return;
@@ -72,12 +92,13 @@ export function UniversalTrackCard({
       <div className="flex items-center gap-3.5 min-w-0 flex-1">
         {/* Artwork */}
         <div className="relative w-14 h-14 rounded-lg bg-noir-graphite border border-noir-border/40 overflow-hidden shrink-0 flex items-center justify-center">
-          {track.coverUrl ? (
+          {resolvedCoverUrl && !imgError ? (
             <img
-              src={track.coverUrl}
+              src={resolvedCoverUrl}
               alt={track.title}
               className="w-full h-full object-cover"
               loading="lazy"
+              onError={() => setImgError(true)}
             />
           ) : (
             <span className="text-xl opacity-40">{badge.icon}</span>
@@ -117,8 +138,34 @@ export function UniversalTrackCard({
         </div>
       </div>
 
-      {/* Right: Actions based STRICTLY on server capabilities */}
+      {/* Right: Actions based STRICTLY on server capabilities and provider integrations */}
       <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
+        {/* Spotify Playback / Connect Button */}
+        {track.provider === 'spotify' && (
+          isSpotifyConnected ? (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => onPlaySpotify ? onPlaySpotify(track) : onPlay?.(track)}
+              className="flex items-center gap-1.5 text-xs text-[#1DB954] border-[#1DB954]/40 hover:bg-[#1DB954]/10"
+              title={spotifyError || 'Play via Spotify Web Playback SDK'}
+            >
+              {isPlaying ? '⏸ Pause' : '▶ Play'}
+            </Button>
+          ) : (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={onConnectSpotify}
+              className="flex items-center gap-1.5 text-xs text-[#1DB954] border-[#1DB954]/40 hover:bg-[#1DB954]/10"
+              title="Connect your Spotify account to play in NoirSync"
+            >
+              <span>🟢</span>
+              <span>Connect Spotify</span>
+            </Button>
+          )
+        )}
+
         {/* Playable via NoirSync Stream */}
         {capabilities.playback === 'noirsync_stream' && onPlay && (
           <Button

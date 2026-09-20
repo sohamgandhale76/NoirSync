@@ -272,8 +272,8 @@ async function runTests() {
     assert.strictEqual(upResB.status, 200);
     trackBId = upResB.json.track.id;
 
-    // Test 3: User A sees only User A's tracks
-    console.log('\nTest 3: User A sees only User A\'s tracks in GET /library...');
+    // Test 3: Shared visibility in GET /library (User A and User B see all shared tracks)
+    console.log('\nTest 3: Shared visibility in GET /library...');
     const listResA = await httpRequest({
       method: 'GET',
       path: '/library',
@@ -282,11 +282,8 @@ async function runTests() {
     assert.strictEqual(listResA.status, 200);
     const tracksA = listResA.json;
     assert.ok(tracksA.some(t => t.id === trackAId), 'User A must see Track A');
-    assert.ok(!tracksA.some(t => t.id === trackBId), 'User A must NOT see Track B');
-    console.log('PASS: User A sees only User A\'s tracks.');
+    assert.ok(tracksA.some(t => t.id === trackBId), 'User A must see Track B in shared Cloud Library');
 
-    // Test 4: User B sees only User B's tracks
-    console.log('\nTest 4: User B sees only User B\'s tracks in GET /library...');
     const listResB = await httpRequest({
       method: 'GET',
       path: '/library',
@@ -295,30 +292,43 @@ async function runTests() {
     assert.strictEqual(listResB.status, 200);
     const tracksB = listResB.json;
     assert.ok(tracksB.some(t => t.id === trackBId), 'User B must see Track B');
-    assert.ok(!tracksB.some(t => t.id === trackAId), 'User B must NOT see Track A');
-    console.log('PASS: User B sees only User B\'s tracks.');
+    assert.ok(tracksB.some(t => t.id === trackAId), 'User B must see Track A in shared Cloud Library');
+    console.log('PASS: Both User A and User B see all shared Cloud Library tracks.');
 
-    // Test 5: User A cannot stream User B's track
-    console.log('\nTest 5: User A cannot stream User B\'s track...');
+    // Test 4: Shared metadata via GET /library/:id
+    console.log('\nTest 4: Shared metadata via GET /library/:id...');
+    const metaRes = await httpRequest({
+      method: 'GET',
+      path: `/library/${trackAId}`,
+      headers: { 'Cookie': cookieB },
+    });
+    assert.strictEqual(metaRes.status, 200);
+    assert.strictEqual(metaRes.json.track.id, trackAId);
+    console.log('PASS: User B can retrieve User A\'s track metadata.');
+
+    // Test 5: Shared streaming via GET /library/:id/stream
+    console.log('\nTest 5: Shared streaming via GET /library/:id/stream...');
     const streamRes = await httpRequest({
       method: 'GET',
       path: `/library/${trackBId}/stream`,
       headers: { 'Cookie': cookieA },
     });
-    assert.strictEqual(streamRes.status, 404, `Expected 404, got ${streamRes.status}`);
-    console.log('PASS: User A cannot stream User B\'s track (returned 404).');
+    assert.strictEqual(streamRes.status, 200, `Expected 200, got ${streamRes.status}`);
+    assert.ok(streamRes.json.url, 'Stream response must contain presigned URL');
+    console.log('PASS: User A can stream User B\'s track in shared Cloud Library.');
 
-    // Test 6: User A cannot access User B's cover
-    console.log('\nTest 6: User A cannot access User B\'s cover...');
+    // Test 6: Shared cover via GET /library/:id/cover
+    console.log('\nTest 6: Shared cover via GET /library/:id/cover...');
     const coverRes = await httpRequest({
       method: 'GET',
       path: `/library/${trackBId}/cover`,
       headers: { 'Cookie': cookieA },
     });
-    assert.strictEqual(coverRes.status, 404, `Expected 404, got ${coverRes.status}`);
-    console.log('PASS: User A cannot access User B\'s cover (returned 404).');
+    assert.strictEqual(coverRes.status, 302, `Expected 302 redirect, got ${coverRes.status}`);
+    assert.ok(coverRes.headers.location, 'Cover response must redirect to presigned cover URL');
+    console.log('PASS: User A can access User B\'s cover in shared Cloud Library.');
 
-    // Add lyrics to Track B as User B
+    // Add lyrics to Track B as User B (uploader)
     const lyricsUpload = buildMultipart({
       files: { lyrics: { filename: 'beta.lrc', buffer: Buffer.from('[00:01.00]Hello Beta'), contentType: 'text/plain' } },
     });
@@ -330,18 +340,19 @@ async function runTests() {
     });
     assert.strictEqual(addLrcRes.status, 200, 'User B adding lyrics to Track B must succeed');
 
-    // Test 7: User A cannot read User B's lyrics
-    console.log('\nTest 7: User A cannot read User B\'s lyrics...');
+    // Test 7: Shared lyrics via GET /library/:id/lyrics
+    console.log('\nTest 7: Shared lyrics via GET /library/:id/lyrics...');
     const readLrcRes = await httpRequest({
       method: 'GET',
       path: `/library/${trackBId}/lyrics`,
       headers: { 'Cookie': cookieA },
     });
-    assert.strictEqual(readLrcRes.status, 404, `Expected 404, got ${readLrcRes.status}`);
-    console.log('PASS: User A cannot read User B\'s lyrics (returned 404).');
+    assert.strictEqual(readLrcRes.status, 200, `Expected 200, got ${readLrcRes.status}`);
+    assert.ok(readLrcRes.body.includes('Hello Beta'), 'User A must be able to read User B\'s lyrics');
+    console.log('PASS: User A can read User B\'s lyrics in shared Cloud Library.');
 
-    // Test 8: User A cannot replace User B's lyrics
-    console.log('\nTest 8: User A cannot replace User B\'s lyrics...');
+    // Test 8: Non-uploader cannot replace another user's lyrics (403 Forbidden)
+    console.log('\nTest 8: Non-uploader cannot replace another user\'s lyrics (403 Forbidden)...');
     const evilLrcUpload = buildMultipart({
       files: { lyrics: { filename: 'hacked.lrc', buffer: Buffer.from('[00:01.00]Hacked'), contentType: 'text/plain' } },
     });
@@ -351,7 +362,7 @@ async function runTests() {
       headers: { 'Content-Type': evilLrcUpload.contentType, 'Cookie': cookieA },
       body: evilLrcUpload.body,
     });
-    assert.strictEqual(evilLrcRes.status, 404, `Expected 404, got ${evilLrcRes.status}`);
+    assert.strictEqual(evilLrcRes.status, 403, `Expected 403 Forbidden, got ${evilLrcRes.status}`);
     // Verify User B's lyrics are intact
     const bLrcCheck = await httpRequest({
       method: 'GET',
@@ -360,158 +371,119 @@ async function runTests() {
     });
     assert.strictEqual(bLrcCheck.status, 200);
     assert.ok(bLrcCheck.body.includes('Hello Beta'), 'Original lyrics must remain intact');
-    console.log('PASS: User A cannot replace User B\'s lyrics.');
+    console.log('PASS: User A cannot replace User B\'s lyrics (HTTP 403 Forbidden).');
 
-    // Test 9: User A cannot delete User B's track
-    console.log('\nTest 9: User A cannot delete User B\'s track...');
+    // Test 9: Cross-user deletion protection (User A cannot delete User B's track -> 403)
+    console.log('\nTest 9: Cross-user deletion protection (User A cannot delete User B\'s track)...');
     const delResA = await httpRequest({
       method: 'DELETE',
       path: `/library/${trackBId}`,
       headers: { 'Cookie': cookieA },
     });
-    assert.strictEqual(delResA.status, 404, `Expected 404, got ${delResA.status}`);
+    assert.strictEqual(delResA.status, 403, `Expected 403 Forbidden, got ${delResA.status}`);
     const trackBCheck = await getTrack(trackBId);
     assert.ok(trackBCheck, 'Track B must still exist in database');
-    console.log('PASS: User A cannot delete User B\'s track.');
+    console.log('PASS: User A cannot delete User B\'s track (HTTP 403 Forbidden).');
 
-    // Test 10: User B cannot delete User A's track
-    console.log('\nTest 10: User B cannot delete User A\'s track...');
+    // Test 10: Cross-user deletion protection (User B cannot delete User A's track -> 403)
+    console.log('\nTest 10: Cross-user deletion protection (User B cannot delete User A\'s track)...');
     const delResB = await httpRequest({
       method: 'DELETE',
       path: `/library/${trackAId}`,
       headers: { 'Cookie': cookieB },
     });
-    assert.strictEqual(delResB.status, 404, `Expected 404, got ${delResB.status}`);
+    assert.strictEqual(delResB.status, 403, `Expected 403 Forbidden, got ${delResB.status}`);
     const trackACheck = await getTrack(trackAId);
     assert.ok(trackACheck, 'Track A must still exist in database');
-    console.log('PASS: User B cannot delete User A\'s track.');
+    console.log('PASS: User B cannot delete User A\'s track (HTTP 403 Forbidden).');
 
-    // Test 11: User-specific storage accounting works
-    console.log('\nTest 11: User-specific storage accounting works...');
-    const storA = await httpRequest({ method: 'GET', path: '/library/storage', headers: { 'Cookie': cookieA } });
-    const storB = await httpRequest({ method: 'GET', path: '/library/storage', headers: { 'Cookie': cookieB } });
-    assert.strictEqual(storA.status, 200);
-    assert.strictEqual(storB.status, 200);
-    assert.strictEqual(storA.json.used, mockAudio.length, 'User A storage must match Track A size');
-    assert.strictEqual(storB.json.used, mockAudio.length, 'User B storage must match Track B size');
-    console.log(`PASS: User A storage=${storA.json.used}B, User B storage=${storB.json.used}B.`);
-
-    // Test 12: User A cannot consume User B's quota
-    console.log('\nTest 12: User A cannot consume User B\'s quota...');
-    const uploadA2 = buildMultipart({
-      fields: { title: 'Song Alpha 2' },
-      files: { audio: { filename: 'alpha2.mp3', buffer: mockAudio, contentType: 'audio/mpeg' } },
+    // Test 11: Unowned / historical track deletion protection (user_id IS NULL -> 403)
+    console.log('\nTest 11: Unowned / historical track deletion protection (user_id IS NULL -> 403)...');
+    const unownedTrackId = `trk_unowned_${runId}`;
+    await insertTrack({
+      id: unownedTrackId,
+      title: 'Unowned System Track',
+      artist: 'System',
+      size: 1024,
+      audio_key: 'system/audio/unowned.mp3',
+      provider: 'local',
+      user_id: null,
     });
-    await httpRequest({
-      method: 'POST',
-      path: '/library/upload',
-      headers: { 'Content-Type': uploadA2.contentType, 'Cookie': cookieA },
-      body: uploadA2.body,
-    });
-    const storAAfter = await httpRequest({ method: 'GET', path: '/library/storage', headers: { 'Cookie': cookieA } });
-    const storBAfter = await httpRequest({ method: 'GET', path: '/library/storage', headers: { 'Cookie': cookieB } });
-    assert.strictEqual(storAAfter.json.used, mockAudio.length * 2, 'User A storage must reflect 2 tracks');
-    assert.strictEqual(storBAfter.json.used, mockAudio.length, 'User B storage must remain unchanged');
-    console.log('PASS: User A\'s uploads do not affect User B\'s quota.');
-
-    // Test 13: Concurrent upload / quota behavior is safe
-    console.log('\nTest 13: Concurrent upload/quota behavior is safe...');
-    // Create User C with small quota to test concurrent race
-    const regResC = await httpRequest({
-      method: 'POST',
-      path: '/api/auth/register',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: `userc_${runId}@example.com`,
-        username: `userc_${runId}`,
-        password: 'Password123!',
-      }),
-    });
-    const cookieC = extractSessionCookie(regResC);
-    const userC = regResC.json.user;
-
-    // Simulate quota check with withUserLock directly:
-    // Try to run two concurrent operations that each would take 1.5 GB when quota is 2 GB
-    const { withUserLock, getUserStorageUsage } = require('./src/db');
-    const fakeSize = 1.5 * 1024 * 1024 * 1024; // 1.5 GB
-    const limit = 2 * 1024 * 1024 * 1024; // 2 GB
-
-    let successfulLocks = 0;
-    let rejectedLocks = 0;
-
-    const op = async () => {
-      try {
-        await withUserLock(userC.id, async (client) => {
-          const current = await getUserStorageUsage(userC.id, client);
-          if (current + fakeSize > limit) {
-            const err = new Error('STORAGE_FULL');
-            err.code = 'STORAGE_FULL';
-            throw err;
-          }
-          // Simulate insert of 1.5 GB track
-          await insertTrack({
-            id: `trk_race_${uuidv4()}`,
-            title: 'Race Track',
-            size: fakeSize,
-            audio_key: `users/${userC.id}/audio/race.mp3`,
-            provider: 'local',
-            user_id: userC.id,
-          }, client);
-          successfulLocks++;
-        });
-      } catch (err) {
-        if (err.code === 'STORAGE_FULL') {
-          rejectedLocks++;
-        } else {
-          throw err;
-        }
-      }
-    };
-
-    // Run both operations concurrently
-    await Promise.all([op(), op()]);
-    assert.strictEqual(successfulLocks, 1, 'Exactly 1 concurrent upload must succeed within quota');
-    assert.strictEqual(rejectedLocks, 1, 'Exactly 1 concurrent upload must be rejected due to quota limit');
-    console.log('PASS: Concurrency lock prevented simultaneous uploads from exceeding user quota.');
-
-    // Test 14: New tracks receive correct user_id in DB
-    console.log('\nTest 14: New tracks receive correct user_id in database...');
-    const dbTrackA = await getTrack(trackAId);
-    assert.strictEqual(dbTrackA.user_id, userA.id, 'DB record must store user_id correctly');
-    console.log('PASS: DB verified track user_id matches User A.');
-
-    // Test 15: Existing migrated tracks have valid ownership
-    console.log('\nTest 15: Existing legacy tracks with user_id NULL remain intact and not exposed...');
-    // Query tracks with user_id IS NULL
-    const legacyRes = await pool.query('SELECT * FROM tracks WHERE user_id IS NULL LIMIT 5');
-    console.log(`Legacy tracks with user_id IS NULL: ${legacyRes.rows.length}`);
-    // Verify neither User A nor User B can see them in GET /library
-    assert.ok(!tracksA.some(t => t.user_id === null), 'User A must not see tracks with user_id NULL');
-    assert.ok(!tracksB.some(t => t.user_id === null), 'User B must not see tracks with user_id NULL');
-    console.log('PASS: Legacy tracks with NULL user_id are not exposed in Cloud Library.');
-
-    // Test 16: Presigned URLs are never generated before ownership verification
-    console.log('\nTest 16: Presigned URLs are never generated before ownership verification...');
-    const callsBefore = presignedUrlCalls;
-    // Unauthorized attempt
-    await httpRequest({
-      method: 'GET',
-      path: `/library/${trackBId}/stream`,
+    const delUnownedRes = await httpRequest({
+      method: 'DELETE',
+      path: `/library/${unownedTrackId}`,
       headers: { 'Cookie': cookieA },
     });
-    assert.strictEqual(presignedUrlCalls, callsBefore, 'Presigned URL must NOT be generated for unauthorized request');
-    // Authorized attempt
-    const authStreamRes = await httpRequest({
+    assert.strictEqual(delUnownedRes.status, 403, `Expected 403 Forbidden, got ${delUnownedRes.status}`);
+    console.log('PASS: Deletion of unowned / system track is rejected with HTTP 403 Forbidden.');
+
+    // Test 12: Uploader can delete their own track
+    console.log('\nTest 12: Uploader can delete their own track...');
+    const uploadDel = buildMultipart({
+      fields: { title: 'Track To Delete', artist: 'Artist A' },
+      files: { audio: { filename: 'delete_me.mp3', buffer: mockAudio, contentType: 'audio/mpeg' } },
+    });
+    const upDelRes = await httpRequest({
+      method: 'POST',
+      path: '/library/upload',
+      headers: { 'Content-Type': uploadDel.contentType, 'Cookie': cookieA },
+      body: uploadDel.body,
+    });
+    assert.strictEqual(upDelRes.status, 200);
+    const trackToDeleteId = upDelRes.json.track.id;
+
+    const delOwnRes = await httpRequest({
+      method: 'DELETE',
+      path: `/library/${trackToDeleteId}`,
+      headers: { 'Cookie': cookieA },
+    });
+    assert.strictEqual(delOwnRes.status, 200, `Expected 200, got ${delOwnRes.status}`);
+    const deletedTrackCheck = await getTrack(trackToDeleteId);
+    assert.strictEqual(deletedTrackCheck, null, 'Deleted track must be removed from database');
+    console.log('PASS: Uploader successfully deleted their own track.');
+
+    // Test 13: Per-user 2 GiB quota is NOT enforced on upload
+    console.log('\nTest 13: Per-user 2 GiB quota is NOT enforced on upload...');
+    const uploadLarge = buildMultipart({
+      fields: { title: 'Large Track Free From Quota' },
+      files: { audio: { filename: 'large.mp3', buffer: mockAudio, contentType: 'audio/mpeg' } },
+    });
+    const upResLarge = await httpRequest({
+      method: 'POST',
+      path: '/library/upload',
+      headers: { 'Content-Type': uploadLarge.contentType, 'Cookie': cookieB },
+      body: uploadLarge.body,
+    });
+    assert.strictEqual(upResLarge.status, 200, 'Upload must succeed without 507 quota errors');
+    console.log('PASS: Upload succeeds without quota rejection.');
+
+    // Test 14: New tracks receive correct user_id in DB for attribution
+    console.log('\nTest 14: New tracks receive correct user_id in database for attribution...');
+    const dbTrackB = await getTrack(trackBId);
+    assert.strictEqual(dbTrackB.user_id, userB.id, 'DB record must store user_id correctly');
+    console.log('PASS: DB verified track user_id matches User B.');
+
+    // Test 15: Tracks with audio_key NULL (e.g. metadata-only tracks) are excluded from Cloud Library
+    console.log('\nTest 15: Metadata-only tracks without audio_key are excluded from Cloud Library...');
+    const metaOnlyId = `trk_meta_${runId}`;
+    await insertTrack({
+      id: metaOnlyId,
+      title: 'Metadata Only No Audio',
+      artist: 'Ghost Artist',
+      audio_key: null,
+      provider: 'local',
+      user_id: userB.id,
+    });
+    const checkSharedList = await httpRequest({
       method: 'GET',
-      path: `/library/${trackBId}/stream`,
+      path: '/library',
       headers: { 'Cookie': cookieB },
     });
-    assert.strictEqual(authStreamRes.status, 200);
-    assert.strictEqual(presignedUrlCalls, callsBefore + 1, 'Presigned URL MUST be generated for authorized request');
-    console.log('PASS: Presigned URLs generated strictly after ownership authorization.');
+    assert.ok(!checkSharedList.json.some(t => t.id === metaOnlyId), 'Track with audio_key NULL must not appear in Cloud Library');
+    console.log('PASS: Tracks with audio_key NULL are excluded from Cloud Library.');
 
-    // Test 17: Malformed/nonexistent track IDs do not leak ownership information
-    console.log('\nTest 17: Malformed/nonexistent track IDs do not leak ownership information...');
+    // Test 16: Presigned URLs generated strictly after verifying track exists
+    console.log('\nTest 16: Presigned URLs generated strictly after verifying track exists...');
     const fakeId = '00000000-0000-0000-0000-000000000000';
     const fakeStreamRes = await httpRequest({ method: 'GET', path: `/library/${fakeId}/stream`, headers: { 'Cookie': cookieA } });
     const fakeCoverRes = await httpRequest({ method: 'GET', path: `/library/${fakeId}/cover`, headers: { 'Cookie': cookieA } });
@@ -523,7 +495,7 @@ async function runTests() {
     assert.strictEqual(fakeDelRes.status, 404);
     console.log('PASS: Nonexistent track IDs return consistent 404 responses.');
 
-    // Test 18: Playlist behavior remains compatible
+    // Test 17: Playlist behavior remains compatible
     console.log('\nTest 18: Playlist behavior remains compatible...');
     const plRes = await httpRequest({
       method: 'POST',
@@ -608,7 +580,7 @@ async function runTests() {
     console.log('\nTest 21: Room playback compatibility through legacy endpoints...');
     const roomDownloadRes = await httpRequest({
       method: 'GET',
-      path: `/api/library/tracks/${trackAId}/download`,
+      path: `/api/library/tracks/${trackBId}/download`,
     });
     assert.strictEqual(roomDownloadRes.status, 200, 'Room playback download must succeed without requiring Cloud Library ownership');
     console.log('PASS: Existing room playback continues working through legacy download route.');

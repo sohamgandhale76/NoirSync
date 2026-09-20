@@ -12,7 +12,7 @@ const PROVIDERS = {
   spotify: {
     authUrl: 'https://accounts.spotify.com/authorize',
     tokenUrl: 'https://accounts.spotify.com/api/token',
-    scopes: 'user-read-private user-read-email' // Minimal scope for identifying the user
+    scopes: 'user-read-private user-read-email streaming user-read-playback-state user-modify-playback-state'
   }
 };
 
@@ -303,6 +303,34 @@ router.get('/accounts', async (req, res) => {
   }));
 
   res.json(accounts);
+});
+
+// GET /api/music/spotify/playback-token — Short-lived access token for Web Playback SDK
+router.get('/spotify/playback-token', async (req, res) => {
+  const userId = req.userId;
+  if (!userId) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const { getUserAccessToken } = require('../music/providers/credentials');
+    const token = await getUserAccessToken(userId, 'spotify');
+    if (!token) {
+      return res.status(404).json({ error: 'Spotify account not connected' });
+    }
+
+    return res.json({
+      accessToken: token,
+      tokenType: 'Bearer',
+      expiresIn: 3600
+    });
+  } catch (err) {
+    logger.warn('Failed to retrieve Spotify playback token', { userId, error: err.message });
+    if (err.message === 'ProviderAuthenticationFailed' || err.message === 'ProviderTokenExpired') {
+      return res.status(403).json({ error: 'Spotify session expired or revoked. Please reconnect your account.' });
+    }
+    return res.status(500).json({ error: 'Failed to retrieve Spotify playback token' });
+  }
 });
 
 router.getRedirectUri = getRedirectUri;

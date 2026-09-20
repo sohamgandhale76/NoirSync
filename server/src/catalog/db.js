@@ -60,6 +60,14 @@ function formatUniversalTrack(track) {
     coverUrl = track.coverUrl;
   }
 
+  // Issue D: If YouTube track has no cover but has a providerTrackId, use standard YouTube thumbnail
+  if (!coverUrl && provider === 'youtube' && providerTrackId) {
+    const cleanYtId = String(providerTrackId).replace(/^yt_/, '');
+    if (cleanYtId) {
+      coverUrl = `https://i.ytimg.com/vi/${cleanYtId}/hqdefault.jpg`;
+    }
+  }
+
   return {
     id: track.id || null,
     title: track.title,
@@ -149,7 +157,7 @@ async function searchCatalog({ query, provider, limit = 20, offset = 0 }) {
   }
 
   // 3. Deduplicate by (provider, providerTrackId)
-  // Database rows take precedence because they carry the canonical tracks.id
+  // Database rows take precedence for canonical tracks.id, but live provider results enrich missing/invalid coverUrl
   const trackMap = new Map();
 
   for (const row of dbRows) {
@@ -159,7 +167,15 @@ async function searchCatalog({ query, provider, limit = 20, offset = 0 }) {
 
   for (const live of liveTracks) {
     const key = `${live.provider}:${live.providerTrackId}`;
-    if (!trackMap.has(key)) {
+    if (trackMap.has(key)) {
+      // Issue C: If existing DB entry has missing or truncated/invalid coverUrl, but live has a valid coverUrl, enrich it!
+      const existing = trackMap.get(key);
+      const isInvalidCover = !existing.coverUrl || 
+                             (existing.coverUrl.startsWith('https://i.scdn.co/image/') && existing.coverUrl.length < 50);
+      if (isInvalidCover && live.coverUrl) {
+        existing.coverUrl = live.coverUrl;
+      }
+    } else {
       trackMap.set(key, formatUniversalTrack({
         ...live,
         publication_status: 'published',

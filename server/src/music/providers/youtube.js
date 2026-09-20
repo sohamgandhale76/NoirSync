@@ -19,6 +19,7 @@ class YouTubeAdapter extends BaseAdapter {
         artist: 'HOME',
         album: 'Odyssey',
         duration: 212,
+        coverUrl: `https://i.ytimg.com/vi/${providerTrackId.replace(/^yt_/, '')}/hqdefault.jpg`,
         externalUrl: `https://www.youtube.com/watch?v=${providerTrackId}`,
         isPlayable: true
       };

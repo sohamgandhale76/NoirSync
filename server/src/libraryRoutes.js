@@ -21,6 +21,7 @@ const {
 const {
   insertTrack,
   getAllTracks,
+  getSharedCloudTracks,
   getTrack,
   deleteTrack,
   updateTrackLyricsKey,
@@ -60,14 +61,14 @@ function getExt(file) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /library
-// Returns ONLY tracks owned by the authenticated user
+// Returns all valid shared Cloud/R2 tracks for authenticated users
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
     if (!req.userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
-    const tracks = await getAllTracks(req.userId);
+    const tracks = await getSharedCloudTracks();
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.json(tracks);
   } catch (err) {
@@ -78,7 +79,7 @@ router.get('/', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /library/storage
-// Returns per-user Cloud Library storage usage stats
+// Returns Cloud Library storage usage stats
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/storage', async (req, res) => {
   try {
@@ -105,7 +106,7 @@ router.get('/storage', async (req, res) => {
       usedGB: (used / (1024 ** 3)).toFixed(2),
       limitGB: (limit / (1024 ** 3)).toFixed(1),
       percentUsed,
-      isFull: used >= limit,
+      isFull: false,
       isGuest: false,
     });
   } catch (err) {
@@ -117,8 +118,9 @@ router.get('/storage', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /library/upload
 // Requires permanent user (is_guest = false).
-// Sets tracks.user_id = req.userId (server-authoritative).
-// Concurrency-safe per-user quota checking via PostgreSQL advisory lock.
+// Sets tracks.user_id = req.userId (server-authoritative attribution).
+// Available to all users in the shared Cloud Library.
+// Active 2 GiB per-user quota is NOT enforced.
 // ─────────────────────────────────────────────────────────────────────────────
 router.post(
   '/upload',
@@ -177,18 +179,10 @@ router.post(
       lyricsKey = getUserLyricsKey(req.userId, id);
     }
 
-    // ── Concurrency-safe quota check + atomic track creation ─────────────────
+    // ── Atomic upload & track creation (quota check removed) ─────────────────
     let track;
     try {
       track = await withUserLock(req.userId, async (client) => {
-        const currentUsage = await getUserStorageUsage(req.userId, client);
-        if (currentUsage + audio.size > PER_USER_STORAGE_LIMIT_BYTES) {
-          const err = new Error('STORAGE_FULL');
-          err.code = 'STORAGE_FULL';
-          err.usedBytes = currentUsage;
-          throw err;
-        }
-
         // Upload audio to R2
         await uploadToR2(audioKey, audio.buffer, audio.mimetype || 'audio/mpeg');
 
@@ -212,7 +206,7 @@ router.post(
           }
         }
 
-        // Persist metadata to PostgreSQL under the user's ID
+        // Persist metadata to PostgreSQL under the user's ID for attribution
         return await insertTrack({
           id,
           title,
@@ -229,12 +223,6 @@ router.post(
         }, client);
       });
     } catch (err) {
-      if (err.code === 'STORAGE_FULL' || err.message === 'STORAGE_FULL') {
-        return res.status(507).json({
-          error: 'Storage quota exceeded',
-          message: 'Your Cloud Library has reached its 2GB limit. Delete some tracks to free space.',
-        });
-      }
       logger.error('Track upload failed', { error: err.message, userId: req.userId });
       // Best-effort cleanup of any uploaded R2 objects on failure
       deleteFromR2(audioKey).catch(() => {});
@@ -250,13 +238,13 @@ router.post(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /library/:id
-// Returns single track metadata with strict ownership check
+// Returns single shared track metadata for authenticated users
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {
     if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
-    const track = await getTrack(req.params.id, req.userId);
-    if (!track) return res.status(404).json({ error: 'Track not found' });
+    const track = await getTrack(req.params.id);
+    if (!track || !track.audio_key) return res.status(404).json({ error: 'Track not found' });
     res.json({ track });
   } catch (err) {
     logger.error('GET /library/:id failed', { error: err.message, id: req.params.id });
@@ -266,12 +254,12 @@ router.get('/:id', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /library/:id/stream
-// Returns presigned R2 URL ONLY AFTER verifying track ownership
+// Returns presigned R2 URL for any authenticated user
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/stream', async (req, res) => {
   try {
     if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
-    const track = await getTrack(req.params.id, req.userId);
+    const track = await getTrack(req.params.id);
     if (!track || !track.audio_key) {
       return res.status(404).json({ error: 'Track not found' });
     }
@@ -285,12 +273,12 @@ router.get('/:id/stream', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /library/:id/lyrics
-// Returns plain text lyrics ONLY AFTER verifying track ownership
+// Returns plain text lyrics for any authenticated user
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/lyrics', async (req, res) => {
   try {
     if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
-    const track = await getTrack(req.params.id, req.userId);
+    const track = await getTrack(req.params.id);
     if (!track || !track.lyrics_key) {
       return res.status(404).json({ error: 'Lyrics not found' });
     }
@@ -314,7 +302,7 @@ router.get('/:id/lyrics', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /library/:id/lyrics
-// Associates or replaces .lrc lyrics ONLY AFTER verifying track ownership
+// Associates or replaces .lrc lyrics ONLY for the uploader (track.user_id === req.userId)
 // ─────────────────────────────────────────────────────────────────────────────
 router.post(
   '/:id/lyrics',
@@ -325,9 +313,17 @@ router.post(
         return res.status(403).json({ error: 'Forbidden', message: 'Permanent account required' });
       }
 
-      const track = await getTrack(req.params.id, req.userId);
-      if (!track) {
+      const track = await getTrack(req.params.id);
+      if (!track || !track.audio_key) {
         return res.status(404).json({ error: 'Track not found' });
+      }
+
+      // Uploader authorization: only the uploader can modify lyrics
+      if (!track.user_id || track.user_id !== req.userId) {
+        return res.status(403).json({
+          error: 'Forbidden',
+          message: 'Only the uploader can update lyrics for this track',
+        });
       }
 
       const file = req.file;
@@ -355,12 +351,12 @@ router.post(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /library/:id/cover
-// Redirects to signed URL for cover ONLY AFTER verifying track ownership
+// Redirects to signed URL for cover for any authenticated user
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/cover', async (req, res) => {
   try {
     if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
-    const track = await getTrack(req.params.id, req.userId);
+    const track = await getTrack(req.params.id);
     if (!track || !track.cover_key) {
       return res.status(404).json({ error: 'Cover not found' });
     }
@@ -374,30 +370,43 @@ router.get('/:id/cover', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DELETE /library/:id
-// Deletes track with ownership verification.
-// Safe partial failure strategy:
-// 1. Ownership is verified first.
-// 2. PostgreSQL record is deleted with ownership check (WHERE id = $1 AND user_id = $2).
-//    If DB delete fails, R2 objects remain intact for safe retry.
-// 3. R2 objects are cleaned up best-effort after DB deletion.
+// Deletes track with strict uploader authorization:
+// - Owned track (track.user_id === req.userId): allowed
+// - Another user's track (track.user_id !== req.userId): 403 Forbidden
+// - Unowned / historical track (track.user_id IS NULL): 403 Forbidden
 // ─────────────────────────────────────────────────────────────────────────────
 router.delete('/:id', async (req, res) => {
   try {
     if (!req.userId) return res.status(401).json({ error: 'Unauthorized' });
 
-    // 1. Verify ownership first
-    const track = await getTrack(req.params.id, req.userId);
-    if (!track) {
+    // 1. Verify track exists and is a Cloud Library track
+    const track = await getTrack(req.params.id);
+    if (!track || !track.audio_key) {
       return res.status(404).json({ error: 'Track not found' });
     }
 
-    // 2. Delete from PostgreSQL with ownership enforcement
+    // 2. Safe deletion authorization policy
+    if (!track.user_id) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'Shared system tracks without an owner cannot be deleted.',
+      });
+    }
+
+    if (track.user_id !== req.userId) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'You can only delete tracks you uploaded.',
+      });
+    }
+
+    // 3. Delete from PostgreSQL with ownership enforcement
     const deletedRow = await deleteTrack(track.id, req.userId);
     if (!deletedRow) {
       return res.status(404).json({ error: 'Track not found' });
     }
 
-    // 3. Delete R2 objects (best-effort)
+    // 4. Delete R2 objects (best-effort)
     const deletions = [];
     if (track.audio_key)  deletions.push(deleteFromR2(track.audio_key));
     if (track.cover_key)  deletions.push(deleteFromR2(track.cover_key));

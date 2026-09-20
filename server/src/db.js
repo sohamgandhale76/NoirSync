@@ -211,6 +211,20 @@ async function insertTrack(track, client = pool) {
 }
 
 /**
+ * Retrieve all shared Cloud/R2 tracks.
+ * Invariants:
+ * - audio_key IS NOT NULL (strictly persistent R2 audio, not catalog metadata-only tracks)
+ * - Ordered by uploaded_at descending
+ * @returns {Promise<Array>}
+ */
+async function getSharedCloudTracks() {
+  const result = await pool.query(
+    'SELECT * FROM tracks WHERE audio_key IS NOT NULL ORDER BY uploaded_at DESC'
+  );
+  return result.rows;
+}
+
+/**
  * Retrieve all tracks owned by a specific user, ordered by upload time descending.
  * @param {string} userId
  * @returns {Promise<Array>}
@@ -467,6 +481,7 @@ module.exports = {
   initDb,
   insertTrack,
   getAllTracks,
+  getSharedCloudTracks,
   getTrack,
   deleteTrack,
   updateTrackLyricsKey,
